@@ -1,0 +1,13 @@
+name: Windows correctness baseline
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -A x64
+      - run: cmake --build build --config Release --parallel
+      # Hosted runners may not install Graphics Tools; local --debug tests are separate.
+      - run: .\build\Release\ffg_demo.exe --headless --warp
+      - run: cmake --install build --config Release --prefix build/package
+      - run: .\tools\test-install.ps1 -Package (Resolve-Path build/package).Path
