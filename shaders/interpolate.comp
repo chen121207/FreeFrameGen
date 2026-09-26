@@ -1,0 +1,65 @@
+#version 450
+// Vulkan port of the reference bidirectional FGDS kernel, NOT optical flow.
+layout(local_size_x=8, local_size_y=8) in;
+layout(set=0,binding=0,rgba32f) uniform readonly image2D color0;
+layout(set=0,binding=1,r32f) uniform readonly image2D depth0;
+layout(set=0,binding=2,rg32f) uniform readonly image2D motion0;
+layout(set=0,binding=3,r32ui) uniform readonly uimage2D id0;
+layout(set=0,binding=4,rgba32f) uniform readonly image2D color1;
+layout(set=0,binding=5,r32f) uniform readonly image2D depth1;
+layout(set=0,binding=6,rg32f) uniform readonly image2D motion1;
+layout(set=0,binding=7,r32ui) uniform readonly uimage2D id1;
+layout(set=0,binding=8,rgba32f) uniform writeonly image2D outputFrame;
+layout(push_constant) uniform Params { uint width; uint height; float alpha; uint reset; } pc;
+bool inside(ivec2 p) { return all(greaterThanEqual(p,ivec2(0))) && all(lessThan(p,ivec2(pc.width,pc.height))); }
+bool finite1(float v) { return !isnan(v) && !isinf(v); }
+bool finite2(vec2 v) { return !any(isnan(v)) && !any(isinf(v)); }
+vec2 mv(int s,ivec2 p) { return s==0 ? imageLoad(motion0,p).xy : imageLoad(motion1,p).xy; }
+float depth(int s,ivec2 p) { return s==0 ? imageLoad(depth0,p).x : imageLoad(depth1,p).x; }
+uint oid(int s,ivec2 p) { return s==0 ? imageLoad(id0,p).x : imageLoad(id1,p).x; }
+vec4 col(int s,ivec2 p) { return s==0 ? imageLoad(color0,p) : imageLoad(color1,p); }
+struct Candidate { vec4 color; float z; uint id; bool valid; };
+Candidate gather(int side,ivec2 dst,float phase) {
+    Candidate best=Candidate(vec4(0),1e30,0,false);
+    for(int sy=-1;sy<=1;++sy) for(int sx=-2;sx<=2;++sx) {
+        vec2 q=vec2(dst)+vec2(sx*16,sy*16);
+        for(int k=0;k<3;++k) {
+            if(!finite2(q) || any(greaterThan(abs(q),vec2(1e7)))) break;
+            ivec2 p=ivec2(floor(q+0.5)); if(!inside(p)) break;
+            vec2 m=mv(side,p); if(!finite2(m)) break;
+            q=vec2(dst)-phase*m;
+        }
+        if(!finite2(q) || any(greaterThan(abs(q),vec2(1e7)))) continue;
+        ivec2 p=ivec2(floor(q+0.5)); if(!inside(p)) continue;
+        vec2 m=mv(side,p); float z=depth(side,p); uint id=oid(side,p);
+        if(id==0 || !finite1(z) || z<=0 || !finite2(m)) continue;
+        if(any(greaterThan(abs(vec2(p)+phase*m-vec2(dst)),vec2(0.76)))) continue;
+        vec2 otherPos=vec2(p)+m;
+        if(!finite2(otherPos) || any(greaterThan(abs(otherPos),vec2(1e7)))) continue;
+        ivec2 other=ivec2(floor(otherPos+0.5));
+        if(inside(other)) {
+            uint otherId=oid(1-side,other); float otherZ=depth(1-side,other);
+            if(!finite1(otherZ) || otherZ<=0 || otherId==0) continue;
+            if(otherId==id) {
+                vec2 reverse=mv(1-side,other);
+                if(!finite2(reverse) || abs(z-otherZ)>max(0.01,z*0.02) ||
+                   any(greaterThan(abs(m+reverse),vec2(1.5)))) continue;
+            } else if(otherZ>=z-0.01) continue;
+        }
+        if(z<best.z) best=Candidate(col(side,p),z,id,true);
+    }
+    return best;
+}
+void main() {
+    ivec2 p=ivec2(gl_GlobalInvocationID.xy); if(!inside(p)) return;
+    if(pc.reset!=0 || pc.alpha>=1) { imageStore(outputFrame,p,col(1,p)); return; }
+    if(pc.alpha<=0) { imageStore(outputFrame,p,col(0,p)); return; }
+    Candidate a=gather(0,p,pc.alpha), b=gather(1,p,1-pc.alpha);
+    vec4 result=col(1,p); // Explicit hole fallback, not a reconstruction claim.
+    if(a.valid && b.valid) {
+        if(a.id==b.id && abs(a.z-b.z)<=max(0.01,a.z*0.02)) result=mix(a.color,b.color,pc.alpha);
+        else result=a.z<b.z ? a.color : b.color;
+    } else if(a.valid) result=a.color;
+    else if(b.valid) result=b.color;
+    imageStore(outputFrame,p,result);
+}

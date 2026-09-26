@@ -10,8 +10,12 @@ D3D12 版 FGDS 分开，避免把 DXVK 的 Vulkan 设备强行转换成 D3D12 �
 - 两个端点必须来自同一个 Vulkan device、队列族和尺寸，时间戳/帧号严格递增。
 - ready 预留给 timeline semaphore；消费方只能在等待完成后读取资源。
 - HUD 和透明度 mask 可以为空；不能为了满足接口伪造数据。
-- 这个头文件目前是跨仓库 ABI 契约，Vulkan 插帧执行器仍在实现中，尚未宣称
-  FFG Vulkan 路径可用于游戏运行。
+- `vulkan/` 目录现在包含一个独立的 Windows Vulkan compute runtime。它只
+  记录命令，不拥有 queue、submit 或 present；调用方负责布局、队列所有权
+  和 ready semaphore 等待。当前 shader 是双向重投影加深度/ID 遮挡处理，
+  空洞使用最新帧回退，不包含光流或神经网络增强。
+- 这是可构建的实验运行时，不等于已经接入 L4D2，也不宣称已经完成游戏内
+  的低延迟呈现路径。
 
-DXVK 的下一步会先输出中间帧所需的 Color/Depth/Camera 元数据，再接入
-motion/object-id 采集和实际 FFG Vulkan compute pass。
+DXVK 的下一步仍是输出中间帧所需的 Color/Depth/Camera 元数据，再接入
+motion/object-id 采集和实际游戏内 Vulkan compute pass。
