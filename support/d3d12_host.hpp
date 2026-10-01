@@ -79,6 +79,7 @@ inline LRESULT CALLBACK windowProc(HWND h, UINT m, WPARAM w, LPARAM l)
 struct Gpu
 {
     static constexpr UINT W = 512, H = 288;
+    UINT width = W, height = H;
     ComPtr<IDXGIFactory6> factory;
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12CommandQueue> queue;
@@ -95,7 +96,8 @@ struct Gpu
     UINT64 serial = 0;
     HWND window = nullptr;
     bool debug = false;
-    Gpu(bool warp, bool wantDebug)
+    Gpu(bool warp, bool wantDebug, IDXGIAdapter1 *selected = nullptr, UINT w = W, UINT h = H)
+        : width(w), height(h)
     {
         if (wantDebug)
         {
@@ -106,7 +108,9 @@ struct Gpu
         }
         check(CreateDXGIFactory2(debug ? DXGI_CREATE_FACTORY_DEBUG : 0, IID_PPV_ARGS(&factory)));
         ComPtr<IDXGIAdapter1> adapter;
-        if (warp)
+        if (selected)
+            adapter = selected;
+        else if (warp)
             check(factory->EnumWarpAdapter(IID_PPV_ARGS(&adapter)));
         else
         {
@@ -202,8 +206,8 @@ struct Gpu
         hp.Type = D3D12_HEAP_TYPE_DEFAULT;
         D3D12_RESOURCE_DESC rd{};
         rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        rd.Width = W;
-        rd.Height = H;
+        rd.Width = width;
+        rd.Height = height;
         rd.DepthOrArraySize = 1;
         rd.MipLevels = 1;
         rd.Format = format;
@@ -257,10 +261,11 @@ struct Gpu
         void *p;
         D3D12_RANGE range{0, SIZE_T(size)};
         check(b->Map(0, &range, &p));
-        std::vector<float> v(W * H * channels);
-        for (UINT y = 0; y < H; ++y)
-            memcpy(v.data() + y * W * channels, (char *)p + fp.Offset + y * fp.Footprint.RowPitch,
-                   W * channels * 4);
+        const UINT tw = UINT(rd.Width), th = rd.Height;
+        std::vector<float> v(size_t(tw) * th * channels);
+        for (UINT y = 0; y < th; ++y)
+            memcpy(v.data() + size_t(y) * tw * channels,
+                   (char *)p + fp.Offset + y * fp.Footprint.RowPitch, size_t(tw) * channels * 4);
         D3D12_RANGE empty{};
         b->Unmap(0, &empty);
         return v;
@@ -283,23 +288,31 @@ struct Gpu
             }
         }
     }
-    void openWindow(const wchar_t *title)
+    void openWindow(const wchar_t *title, bool excludeCapture = false)
     {
         WNDCLASSW wc{};
         wc.lpfnWndProc = windowProc;
         wc.hInstance = GetModuleHandleW(nullptr);
         wc.lpszClassName = L"D3D12ResearchDemo";
         RegisterClassW(&wc);
-        RECT rc{0, 0, LONG(W), LONG(H)};
+        RECT rc{0, 0, LONG(width), LONG(height)};
         AdjustWindowRect(&rc, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, FALSE);
         window = CreateWindowW(wc.lpszClassName, title, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
                                CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top,
                                nullptr, nullptr, wc.hInstance, nullptr);
         if (!window)
             throw std::runtime_error("CreateWindow");
+        if (excludeCapture)
+        {
+            DWORD affinity = 0;
+            if (!SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE) ||
+                !GetWindowDisplayAffinity(window, &affinity) || affinity != WDA_EXCLUDEFROMCAPTURE)
+                throw std::runtime_error(
+                    "Capture exclusion unavailable; refusing recursive capture");
+        }
         DXGI_SWAP_CHAIN_DESC1 d{};
-        d.Width = W;
-        d.Height = H;
+        d.Width = width;
+        d.Height = height;
         d.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         d.SampleDesc.Count = 1;
         d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -336,7 +349,7 @@ struct Gpu
         presentRoot = root(device.Get(), rs);
         const char *shader = R"(Texture2D<float4> img:register(t0);
 float4 vs(uint id:SV_VertexID):SV_Position {float2 p=float2((id<<1)&2,id&2);return float4(p*float2(2,-2)+float2(-1,1),0,1);}
-float4 ps(float4 p:SV_Position):SV_Target {float3 c=saturate(img.Load(int3(p.xy,0)).rgb);return float4(pow(c,1.0/2.2),1);})";
+float4 ps(float4 p:SV_Position):SV_Target {float3 c=saturate(img.Load(int3(p.xy,0)).rgb);return float4(lerp(1.055*pow(c,1.0/2.4)-.055,12.92*c,step(c,.0031308)),1);})";
         auto vs = compile(shader, "vs", "vs_5_1"), ps = compile(shader, "ps", "ps_5_1");
         D3D12_GRAPHICS_PIPELINE_STATE_DESC p{};
         p.pRootSignature = presentRoot.Get();
@@ -354,13 +367,20 @@ float4 ps(float4 p:SV_Position):SV_Target {float3 c=saturate(img.Load(int3(p.xy,
         check(device->CreateGraphicsPipelineState(&p, IID_PPV_ARGS(&presentPso)));
         ShowWindow(window, SW_SHOW);
     }
-    bool pump()
+    bool pump(bool *generationEnabled = nullptr)
     {
         MSG m;
         while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE))
         {
             if (m.message == WM_QUIT)
                 return false;
+            if (m.message == WM_KEYDOWN && m.hwnd == window)
+            {
+                if (m.wParam == VK_ESCAPE)
+                    return false;
+                if (generationEnabled && m.wParam == VK_SPACE && !(m.lParam & (1LL << 30)))
+                    *generationEnabled = !*generationEnabled;
+            }
             TranslateMessage(&m);
             DispatchMessageW(&m);
         }
@@ -390,8 +410,8 @@ float4 ps(float4 p:SV_Position):SV_Target {float3 c=saturate(img.Load(int3(p.xy,
         ID3D12DescriptorHeap *heaps[] = {presentSrv.Get()};
         cmd->SetDescriptorHeaps(1, heaps);
         cmd->SetGraphicsRootDescriptorTable(0, presentSrv->GetGPUDescriptorHandleForHeapStart());
-        D3D12_VIEWPORT vp{0, 0, float(W), float(H), 0, 1};
-        D3D12_RECT sc{0, 0, LONG(W), LONG(H)};
+        D3D12_VIEWPORT vp{0, 0, float(width), float(height), 0, 1};
+        D3D12_RECT sc{0, 0, LONG(width), LONG(height)};
         cmd->RSSetViewports(1, &vp);
         cmd->RSSetScissorRects(1, &sc);
         cmd->OMSetRenderTargets(1, &rtv, FALSE, nullptr);

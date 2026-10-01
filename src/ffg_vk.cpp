@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iterator>
 #include <memory>
+#include <vector>
 
 #include "ffg_interpolate.h"
 
@@ -38,6 +40,23 @@ struct FfgVkContext {
   VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
 };
 
+// V3 keeps the immutable pipeline in a normal v0.2 context, but gives every
+// in-flight slot its own descriptor pool/set.  Updating one set therefore
+// cannot race a command buffer that is still consuming another slot's set.
+struct FfgVkContextV3 {
+  FfgVkContext* core = nullptr;
+  PFN_vkGetSemaphoreCounterValue getSemaphoreCounterValue = nullptr;
+
+  struct Slot {
+    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    VkSemaphore retireSemaphore = VK_NULL_HANDLE;
+    uint64_t retireValue = 0;
+  };
+
+  std::vector<Slot> slots;
+};
+
 namespace {
 
 template <typename T>
@@ -45,24 +64,92 @@ T load(PFN_vkGetDeviceProcAddr proc, VkDevice device, const char* name) {
   return reinterpret_cast<T>(proc(device, name));
 }
 
+bool imageDefined(const FgdsVkImage& image);
+
 bool validFrame(const FgdsVkFrame& frame, VkDevice device, VkPhysicalDevice physicalDevice,
                 uint32_t queueFamily, uint32_t width, uint32_t height) {
   if (frame.structSize != sizeof(FgdsVkFrame) || frame.version != FGDS_VK_VERSION ||
       frame.reserved || frame.reserved2 || frame.width != width || frame.height != height ||
       frame.device != static_cast<uint64_t>(reinterpret_cast<uintptr_t>(device)) ||
       frame.physicalDevice != static_cast<uint64_t>(reinterpret_cast<uintptr_t>(physicalDevice)) ||
-      frame.queueFamily != queueFamily || (frame.flags & ~FGDS_VK_CAMERA_CUT))
+      frame.queueFamily != queueFamily || (frame.flags & ~FGDS_VK_CAMERA_CUT) ||
+      imageDefined(frame.hudMask) || imageDefined(frame.transparencyMask))
     return false;
   for (float value : frame.worldToClip)
     if (!std::isfinite(value))
       return false;
-  if (!std::isfinite(frame.jitterPixels[0]) || !std::isfinite(frame.jitterPixels[1]))
+  // The current kernel has no explicit camera-jitter reconstruction path.
+  if (frame.jitterPixels[0] != 0.0f || frame.jitterPixels[1] != 0.0f)
     return false;
   return true;
 }
 
 VkImageView viewOf(const FgdsVkImage& image) {
   return reinterpret_cast<VkImageView>(static_cast<uintptr_t>(image.view));
+}
+
+bool imageDefined(const FgdsVkImage& image) {
+  return image.image != 0 || image.view != 0 || image.format != 0 || image.layout != 0;
+}
+
+bool validV2Frame(const FgdsVkFrameV2& frame, VkDevice device,
+                 VkPhysicalDevice physicalDevice, uint32_t queueFamily,
+                 uint32_t width, uint32_t height) {
+  if (frame.structSize < sizeof(FgdsVkFrameV2) ||
+      frame.version != FGDS_VK_VERSION_0_2 || frame.reserved || frame.reserved2 ||
+      frame.reserved3 || frame.width != width || frame.height != height ||
+      frame.device != static_cast<uint64_t>(reinterpret_cast<uintptr_t>(device)) ||
+      frame.physicalDevice != static_cast<uint64_t>(reinterpret_cast<uintptr_t>(physicalDevice)) ||
+      frame.queueFamily != queueFamily || (frame.flags & ~FGDS_VK_FRAME_V2_FLAGS))
+    return false;
+  for (float value : frame.worldToClip)
+    if (!std::isfinite(value))
+      return false;
+  if (frame.jitterPixels[0] != 0.0f || frame.jitterPixels[1] != 0.0f)
+    return false;
+  if (frame.resourceFlags & ~(FGDS_VK_RESOURCE_CORE | FGDS_VK_RESOURCE_HUD_MASK |
+                              FGDS_VK_RESOURCE_TRANSPARENCY_MASK))
+    return false;
+  if ((frame.resourceFlags & FGDS_VK_RESOURCE_CORE) != FGDS_VK_RESOURCE_CORE)
+    return false;
+  const bool hudResource = (frame.resourceFlags & FGDS_VK_RESOURCE_HUD_MASK) != 0;
+  const bool transparencyResource =
+      (frame.resourceFlags & FGDS_VK_RESOURCE_TRANSPARENCY_MASK) != 0;
+  if (hudResource != imageDefined(frame.hudMask) ||
+      transparencyResource != imageDefined(frame.transparencyMask))
+    return false;
+  if (((frame.flags & FGDS_VK_FRAME_HUD_MASK) != 0) != hudResource ||
+      ((frame.flags & FGDS_VK_FRAME_TRANSPARENCY_MASK) != 0) != transparencyResource)
+    return false;
+  if (!frame.color.image || !frame.color.view || !frame.depth.image || !frame.depth.view ||
+      !frame.motionToOther.image || !frame.motionToOther.view || !frame.objectId.image ||
+      !frame.objectId.view)
+    return false;
+  return true;
+}
+
+void copyV2Frame(const FgdsVkFrameV2& from, FgdsVkFrame& to) {
+  to = {};
+  to.structSize = sizeof(FgdsVkFrame);
+  to.version = FGDS_VK_VERSION;
+  to.width = from.width;
+  to.height = from.height;
+  to.frameId = from.frameId;
+  to.timestampNs = from.timestampNs;
+  std::copy(std::begin(from.worldToClip), std::end(from.worldToClip), std::begin(to.worldToClip));
+  to.jitterPixels[0] = from.jitterPixels[0];
+  to.jitterPixels[1] = from.jitterPixels[1];
+  to.flags = from.flags & FGDS_VK_CAMERA_CUT;
+  to.device = from.device;
+  to.physicalDevice = from.physicalDevice;
+  to.queueFamily = from.queueFamily;
+  to.color = from.color;
+  to.depth = from.depth;
+  to.motionToOther = from.motionToOther;
+  to.objectId = from.objectId;
+  to.hudMask = from.hudMask;
+  to.transparencyMask = from.transparencyMask;
+  to.ready = from.ready;
 }
 
 } // namespace
@@ -211,6 +298,33 @@ extern "C" FFG_VK_API void __cdecl ffgVkDestroy(FfgVkContext* context) {
   delete context;
 }
 
+extern "C" FFG_VK_API VkResult __cdecl ffgVkGetCapabilities(
+    FfgVkContext* context, FgdsVkCapabilities* capabilities) {
+  if (!context || !capabilities)
+    return VK_ERROR_INITIALIZATION_FAILED;
+  if (capabilities->structSize < sizeof(FgdsVkCapabilities))
+    return VK_ERROR_VALIDATION_FAILED_EXT;
+  capabilities->version = FGDS_VK_VERSION_0_2;
+  capabilities->nativeApiVersion = FGDS_VK_VERSION_0_2;
+  capabilities->backend = FGDS_VK_BACKEND_VULKAN;
+  capabilities->maxWidth = 16384;
+  capabilities->maxHeight = 16384;
+  capabilities->requiredResources = FGDS_VK_RESOURCE_CORE;
+  capabilities->optionalResources = 0;
+  capabilities->featureFlags = FGDS_VK_FEATURE_NATIVE_V2 |
+                                FGDS_VK_FEATURE_BIDIRECTIONAL_MOTION |
+                                FGDS_VK_FEATURE_DEPTH_OCCLUSION |
+                                FGDS_VK_FEATURE_OBJECT_ID_REJECTION |
+                                FGDS_VK_FEATURE_CAMERA_CUT;
+  capabilities->colorFormat = FGDS_VK_FORMAT_RGBA32_FLOAT;
+  capabilities->depthFormat = FGDS_VK_FORMAT_R32_FLOAT;
+  capabilities->motionFormat = FGDS_VK_FORMAT_RG32_FLOAT;
+  capabilities->objectIdFormat = FGDS_VK_FORMAT_R32_UINT;
+  for (auto& value : capabilities->reserved)
+    value = 0;
+  return VK_SUCCESS;
+}
+
 extern "C" FFG_VK_API VkResult __cdecl ffgVkRecord(
     FfgVkContext* context, VkCommandBuffer commandBuffer, const FgdsVkPair* pair,
     const FgdsVkImage* output) {
@@ -231,12 +345,22 @@ extern "C" FFG_VK_API VkResult __cdecl ffgVkRecord(
 
   const FgdsVkImage* images[9] = {&a.color, &a.depth, &a.motionToOther, &a.objectId,
                                    &b.color, &b.depth, &b.motionToOther, &b.objectId, output};
+  const uint32_t formats[9] = {FGDS_VK_FORMAT_RGBA32_FLOAT, FGDS_VK_FORMAT_R32_FLOAT,
+                               FGDS_VK_FORMAT_RG32_FLOAT, FGDS_VK_FORMAT_R32_UINT,
+                               FGDS_VK_FORMAT_RGBA32_FLOAT, FGDS_VK_FORMAT_R32_FLOAT,
+                               FGDS_VK_FORMAT_RG32_FLOAT, FGDS_VK_FORMAT_R32_UINT,
+                               FGDS_VK_FORMAT_RGBA32_FLOAT};
   VkDescriptorImageInfo infos[9]{};
   for (uint32_t i = 0; i < 9; ++i) {
-    if (!images[i]->image || !images[i]->view || images[i]->layout != VK_IMAGE_LAYOUT_GENERAL)
+    if (!images[i]->image || !images[i]->view || images[i]->layout != VK_IMAGE_LAYOUT_GENERAL ||
+        images[i]->format != formats[i])
       return VK_ERROR_VALIDATION_FAILED_EXT;
     infos[i].imageView = viewOf(*images[i]);
     infos[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+  }
+  for (uint32_t i = 0; i < 8; ++i) {
+    if (images[i]->image == output->image || images[i]->view == output->view)
+      return VK_ERROR_VALIDATION_FAILED_EXT;
   }
   VkWriteDescriptorSet writes[9]{};
   for (uint32_t i = 0; i < 9; ++i) {
@@ -275,4 +399,183 @@ extern "C" FFG_VK_API VkResult __cdecl ffgVkRecord(
                                 0, nullptr);
   }
   return VK_SUCCESS;
+}
+
+extern "C" FFG_VK_API VkResult __cdecl ffgVkRecordV2(
+    FfgVkContext* context, VkCommandBuffer commandBuffer, const FgdsVkPairV2* pair,
+    const FgdsVkImage* output) {
+  if (!context || !commandBuffer || !pair || !output)
+    return VK_ERROR_INITIALIZATION_FAILED;
+  if (pair->structSize < sizeof(FgdsVkPairV2) || pair->version != FGDS_VK_VERSION_0_2 ||
+      pair->reserved || !std::isfinite(pair->alpha) || pair->alpha < 0.0f || pair->alpha > 1.0f)
+    return VK_ERROR_VALIDATION_FAILED_EXT;
+  const auto& a = pair->frames[0];
+  const auto& b = pair->frames[1];
+  if (!a.width || !a.height || a.width > 16384 || a.height > 16384 ||
+      a.width != b.width || a.height != b.height || a.frameId >= b.frameId ||
+      a.timestampNs >= b.timestampNs ||
+      !validV2Frame(a, context->device, context->physicalDevice, context->queueFamily, a.width,
+                    a.height) ||
+      !validV2Frame(b, context->device, context->physicalDevice, context->queueFamily, a.width,
+                    a.height))
+    return VK_ERROR_VALIDATION_FAILED_EXT;
+  if ((a.resourceFlags | b.resourceFlags) &
+      (FGDS_VK_RESOURCE_HUD_MASK | FGDS_VK_RESOURCE_TRANSPARENCY_MASK))
+    return VK_ERROR_FEATURE_NOT_PRESENT;
+  FgdsVkPair legacy{};
+  legacy.structSize = sizeof(FgdsVkPair);
+  legacy.version = FGDS_VK_VERSION;
+  legacy.alpha = pair->alpha;
+  copyV2Frame(a, legacy.frames[0]);
+  copyV2Frame(b, legacy.frames[1]);
+  return ffgVkRecord(context, commandBuffer, &legacy, output);
+}
+
+extern "C" FFG_VK_API VkResult __cdecl ffgVkCreateV3(
+    VkPhysicalDevice physicalDevice, VkDevice device, uint32_t queueFamily,
+    PFN_vkGetDeviceProcAddr getProc, uint32_t slotCount, FfgVkContextV3** output) {
+  if (!output || !physicalDevice || !device || !getProc || slotCount == 0 ||
+      slotCount > FGDS_VK_V3_MAX_SLOTS)
+    return VK_ERROR_INITIALIZATION_FAILED;
+  *output = nullptr;
+
+  // A timeline counter is the only synchronization primitive that remains
+  // queryable after an application resets/reuses its submit objects.  Require
+  // it at creation so a V3 context never silently loses its retirement guard.
+  auto getCounter = load<PFN_vkGetSemaphoreCounterValue>(
+      getProc, device, "vkGetSemaphoreCounterValue");
+  if (!getCounter)
+    getCounter = reinterpret_cast<PFN_vkGetSemaphoreCounterValue>(
+        getProc(device, "vkGetSemaphoreCounterValueKHR"));
+  if (!getCounter)
+    return VK_ERROR_EXTENSION_NOT_PRESENT;
+
+  FfgVkContext* core = nullptr;
+  VkResult result = ffgVkCreate(physicalDevice, device, queueFamily, getProc, &core);
+  if (result != VK_SUCCESS)
+    return result;
+
+  auto context = std::make_unique<FfgVkContextV3>();
+  context->core = core;
+  context->getSemaphoreCounterValue = getCounter;
+  context->slots.resize(slotCount);
+
+  VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 9};
+  VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+  poolInfo.maxSets = 1;
+  poolInfo.poolSizeCount = 1;
+  poolInfo.pPoolSizes = &poolSize;
+  VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+  allocInfo.descriptorSetCount = 1;
+  allocInfo.pSetLayouts = &core->setLayout;
+
+  for (auto& slot : context->slots) {
+    result = core->createDescriptorPool(device, &poolInfo, nullptr, &slot.descriptorPool);
+    if (result != VK_SUCCESS)
+      break;
+    allocInfo.descriptorPool = slot.descriptorPool;
+    result = core->allocateDescriptorSets(device, &allocInfo, &slot.descriptorSet);
+    if (result != VK_SUCCESS)
+      break;
+  }
+  if (result != VK_SUCCESS) {
+    for (auto& slot : context->slots) {
+      if (slot.descriptorPool)
+        core->destroyDescriptorPool(device, slot.descriptorPool, nullptr);
+    }
+    ffgVkDestroy(core);
+    return result;
+  }
+
+  *output = context.release();
+  return VK_SUCCESS;
+}
+
+extern "C" FFG_VK_API void __cdecl ffgVkDestroyV3(FfgVkContextV3* context) {
+  if (!context)
+    return;
+  if (context->core) {
+    for (auto& slot : context->slots) {
+      if (slot.descriptorPool)
+        context->core->destroyDescriptorPool(context->core->device, slot.descriptorPool,
+                                              nullptr);
+    }
+    ffgVkDestroy(context->core);
+  }
+  delete context;
+}
+
+extern "C" FFG_VK_API VkResult __cdecl ffgVkGetCapabilitiesV3(
+    FfgVkContextV3* context, FgdsVkCapabilitiesV3* capabilities) {
+  if (!context || !context->core || !capabilities)
+    return VK_ERROR_INITIALIZATION_FAILED;
+  if (capabilities->structSize < sizeof(FgdsVkCapabilitiesV3))
+    return VK_ERROR_VALIDATION_FAILED_EXT;
+  capabilities->version = FGDS_VK_VERSION_0_3;
+  capabilities->backend = FGDS_VK_BACKEND_VULKAN;
+  capabilities->slotCount = static_cast<uint32_t>(context->slots.size());
+  capabilities->maxSlots = FGDS_VK_V3_MAX_SLOTS;
+  capabilities->maxWidth = 16384;
+  capabilities->maxHeight = 16384;
+  capabilities->requiredResources = FGDS_VK_RESOURCE_CORE;
+  capabilities->optionalResources = 0;
+  capabilities->featureFlags = FGDS_VK_FEATURE_NATIVE_V2 |
+                                FGDS_VK_FEATURE_BIDIRECTIONAL_MOTION |
+                                FGDS_VK_FEATURE_DEPTH_OCCLUSION |
+                                FGDS_VK_FEATURE_OBJECT_ID_REJECTION |
+                                FGDS_VK_FEATURE_CAMERA_CUT |
+                                FGDS_VK_FEATURE_MULTI_FLIGHT;
+  capabilities->colorFormat = FGDS_VK_FORMAT_RGBA32_FLOAT;
+  capabilities->depthFormat = FGDS_VK_FORMAT_R32_FLOAT;
+  capabilities->motionFormat = FGDS_VK_FORMAT_RG32_FLOAT;
+  capabilities->objectIdFormat = FGDS_VK_FORMAT_R32_UINT;
+  for (auto& value : capabilities->reserved)
+    value = 0;
+  return VK_SUCCESS;
+}
+
+extern "C" FFG_VK_API VkResult __cdecl ffgVkRecordV3(
+    FfgVkContextV3* context, VkCommandBuffer commandBuffer, const FgdsVkPairV2* pair,
+    const FgdsVkImage* output, uint32_t slotIndex, VkSemaphore completionSemaphore,
+    uint64_t completionValue) {
+  if (!context || !context->core || !commandBuffer || !pair || !output)
+    return VK_ERROR_INITIALIZATION_FAILED;
+  if (slotIndex >= context->slots.size())
+    return VK_ERROR_VALIDATION_FAILED_EXT;
+  if (completionSemaphore == VK_NULL_HANDLE || completionValue == 0)
+    return VK_ERROR_VALIDATION_FAILED_EXT;
+
+  // The caller's new token must describe a future signal.  Rejecting an
+  // already-reached value prevents a slot from appearing retired before the
+  // command buffer is submitted, including when a slot changes semaphores.
+  uint64_t completionCounter = 0;
+  VkResult result = context->getSemaphoreCounterValue(
+      context->core->device, completionSemaphore, &completionCounter);
+  if (result != VK_SUCCESS)
+    return result;
+  if (completionCounter >= completionValue)
+    return VK_ERROR_VALIDATION_FAILED_EXT;
+
+  auto& slot = context->slots[slotIndex];
+  if (slot.retireSemaphore != VK_NULL_HANDLE) {
+    uint64_t completed = 0;
+    result = context->getSemaphoreCounterValue(
+        context->core->device, slot.retireSemaphore, &completed);
+    if (result != VK_SUCCESS)
+      return result;
+    if (completed < slot.retireValue)
+      return VK_NOT_READY;
+  }
+
+  // Reuse the thoroughly validated V2 path while overriding only the
+  // descriptor set selected for this slot.  The local copy prevents any
+  // mutation of the shared core descriptor set and keeps slots independent.
+  FfgVkContext view = *context->core;
+  view.descriptorSet = slot.descriptorSet;
+  result = ffgVkRecordV2(&view, commandBuffer, pair, output);
+  if (result == VK_SUCCESS) {
+    slot.retireSemaphore = completionSemaphore;
+    slot.retireValue = completionValue;
+  }
+  return result;
 }

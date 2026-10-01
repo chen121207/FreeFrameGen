@@ -1,0 +1,14 @@
+{
+  "id": "8DE1241F-5D23-49D2-A5AA-D8EF2801D362",
+  "folder": "FreeFrameGen",
+  "displayName": "FreeFrameGen (FFG)",
+  "description": "独立显示器/窗口捕获与 GPU 插帧预览、Native SDK。Beta SDR preview; not a full-screen game accelerator.",
+  "channel": "beta",
+  "icon": "assets/ffg.ico",
+  "version": "0.3.0",
+  "exe": "ffg_player.exe",
+  "launchArgs": "",
+  "testExe": "ffg_flow_test.exe",
+  "testArgs": ["--warp"],
+  "url": "https://github.com/chen121207/FreeFrameGen"
+}

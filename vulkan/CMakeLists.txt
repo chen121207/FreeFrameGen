@@ -18,5 +18,21 @@ target_include_directories(FreeFrameGenVulkan PUBLIC ../include "${FFG_VK_HEADER
 target_compile_definitions(FreeFrameGenVulkan PRIVATE FFG_VK_BUILD VK_NO_PROTOTYPES)
 target_compile_features(FreeFrameGenVulkan PRIVATE cxx_std_17)
 target_compile_options(FreeFrameGenVulkan PRIVATE /W4 /WX /wd4324 /utf-8)
+
+# Optional real-device smoke.  It loads vulkan-1.dll at runtime so machines
+# without a Vulkan loader are reported as a CTest skip instead of failing the
+# library build.  The test exercises the V3 timeline retirement contract and
+# performs a small GPU readback; it is intentionally kept in the Vulkan-only
+# project and is not part of the default D3D12 build.
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(ffg_vk_v3_smoke ../tests/ffg_vk_v3_smoke.cpp)
+  target_include_directories(ffg_vk_v3_smoke PRIVATE ../include "${FFG_VK_HEADERS}")
+  target_compile_definitions(ffg_vk_v3_smoke PRIVATE VK_NO_PROTOTYPES)
+  target_compile_features(ffg_vk_v3_smoke PRIVATE cxx_std_17)
+  target_compile_options(ffg_vk_v3_smoke PRIVATE /W4 /WX /wd4324 /utf-8)
+  target_link_libraries(ffg_vk_v3_smoke PRIVATE FreeFrameGenVulkan)
+  add_test(NAME vulkan_v3_smoke COMMAND ffg_vk_v3_smoke)
+endif()
 install(TARGETS FreeFrameGenVulkan RUNTIME DESTINATION bin ARCHIVE DESTINATION lib)
 install(DIRECTORY ../include/ DESTINATION include)

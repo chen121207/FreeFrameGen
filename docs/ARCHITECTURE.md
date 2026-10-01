@@ -3,12 +3,12 @@
 ## 两个独立入口
 
 ```text
-Native（本版原型）：
-Producer -> Color/Depth/bidirectional MV/Object ID -> FGDS -> GPU interpolation -> Host Present
+Native（FGDS v0.2/v0.3 原生接口）：
+Game/engine -> capability negotiation -> Color/Depth/bidirectional MV/Object ID -> FGDS V2/V3 -> GPU interpolation -> Host Present
 
-Capture（尚未实现）：
-Windows Graphics Capture / Desktop Duplication
-  -> 连续帧、时间戳 -> GPU optical flow / confidence
+Capture（v0.3 显示器预览）：
+Desktop Duplication -> D3D11/D3D12 shared texture + fence
+  -> 连续帧、时间戳 -> GPU pyramid block matching / confidence
   -> FFG reconstruction -> FFG-owned output window
 ```
 
@@ -50,12 +50,15 @@ Capture 不伪造不存在的引擎 Depth/Object ID；必须另设 capability fl
 
 ## API 和模块
 
-- include/fgds：格式/时间/所有权契约草案。
-- include/ffg + src/ffg.cpp：最小 in-process D3D12 DLL SDK。
+- include/fgds：格式/时间/所有权契约与冻结 v0.1/V2/V3 结构。
+- include/ffg + src/ffg.cpp：in-process D3D12 DLL SDK、能力查询、V2 入口和 V3 多槽入口。
+- include/fgds/fgds_vk.h + src/ffg_vk.cpp：独立 Vulkan 原生 runtime，V2 入口通过可选 Vulkan 工程构建。
 - shaders/interpolate.hlsl：独立 GPU 算法。
 - support/scene_renderer.hpp：合成输入 fixture，不属于实际游戏兼容层。
 - src/demo.cpp：独立 host/present 与数值回归。
-- future capture、scheduler、IPC、advanced reconstruction：尚无实现。
+- src/capture.cpp + support/desktop_capture.hpp：真实显示器捕获与独立输出。
+- support/color_flow.hpp + shaders/capture.hlsl：颜色专用金字塔块匹配和插值，参见 [捕获说明](CAPTURE.md)。
+- scheduler、IPC、advanced reconstruction：尚无实现。
 
 Windows 捕获一手资料：
 https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/desktop-dup-api

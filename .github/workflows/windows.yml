@@ -9,5 +9,14 @@ jobs:
       - run: cmake --build build --config Release --parallel
       # Hosted runners may not install Graphics Tools; local --debug tests are separate.
       - run: .\build\Release\ffg_demo.exe --headless --warp
+      - run: .\build\Release\ffg_flow_test.exe --warp
+      - run: .\build\Release\ffg_capture.exe --help
       - run: cmake --install build --config Release --prefix build/package
       - run: .\tools\test-install.ps1 -Package (Resolve-Path build/package).Path
+      - run: .\tools\build-installer.ps1
+      - run: .\tools\test-shortcut-identity.ps1
+      - run: .\tools\test-installer.ps1 -Installer .\build\setup\FreeFrameGen-Setup-0.3.0-x64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FreeFrameGen-windows-x64-setup
+          path: build/setup/*

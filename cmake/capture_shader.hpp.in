@@ -1,0 +1,2 @@
+#pragma once
+static constexpr const char* CAPTURE_SHADER=R"FFGSHADER(@CAPTURE_SHADER_SOURCE@)FFGSHADER";

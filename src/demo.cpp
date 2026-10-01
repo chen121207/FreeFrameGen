@@ -1,5 +1,6 @@
 #include "scene_renderer.hpp"
 #include "ffg/ffg.h"
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 double mae(const std::vector<float> &a, const std::vector<float> &b)
@@ -41,6 +42,15 @@ int main(int argc, char **argv)
         FfgContext *raw = nullptr;
         check(ffgCreate(gpu.device.Get(), &raw));
         std::unique_ptr<FfgContext, decltype(&ffgDestroy)> ctx(raw, ffgDestroy);
+        FgdsCapabilities capabilities{};
+        capabilities.structSize = sizeof capabilities;
+        check(ffgGetCapabilities(ctx.get(), &capabilities));
+        if (capabilities.version != FGDS_VERSION_0_2 ||
+            capabilities.backend != FGDS_BACKEND_D3D12 ||
+            capabilities.requiredResources != FGDS_RESOURCE_CORE ||
+            capabilities.optionalResources != 0 ||
+            (capabilities.featureFlags & FGDS_FEATURE_BIDIRECTIONAL_MOTION) == 0)
+            throw std::runtime_error("native capability negotiation regression");
         auto pairFor = [&]() {
             FgdsPair p{};
             p.structSize = sizeof p;
@@ -50,10 +60,44 @@ int main(int argc, char **argv)
             p.alpha = 0.5f;
             return p;
         };
+        auto pairForV2 = [&]() {
+            FgdsPairV2 p{};
+            p.structSize = sizeof p;
+            p.version = FGDS_VERSION_0_2;
+            p.alpha = 0.5f;
+            for (int side = 0; side < 2; ++side)
+            {
+                const auto legacy = pairFor().frames[side];
+                auto &frame = p.frames[side];
+                frame.structSize = sizeof frame;
+                frame.version = FGDS_VERSION_0_2;
+                frame.width = legacy.width;
+                frame.height = legacy.height;
+                frame.frameId = legacy.frameId;
+                frame.timestampNs = legacy.timestampNs;
+                for (int i = 0; i < 16; ++i)
+                    frame.worldToClip[i] = legacy.worldToClip[i];
+                frame.jitterPixels[0] = legacy.jitterPixels[0];
+                frame.jitterPixels[1] = legacy.jitterPixels[1];
+                frame.flags = legacy.flags;
+                frame.color = legacy.color;
+                frame.depth = legacy.depth;
+                frame.motionToOther = legacy.motionToOther;
+                frame.objectId = legacy.objectId;
+                frame.resourceFlags = FGDS_RESOURCE_CORE;
+            }
+            return p;
+        };
         auto generate = [&](const FgdsPair &p) {
             gpu.begin();
             output.to(gpu.cmd.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             check(ffgRecord(ctx.get(), gpu.cmd.Get(), &p, output.r.Get()));
+            gpu.submit();
+        };
+        auto generateV2 = [&](const FgdsPairV2 &p) {
+            gpu.begin();
+            output.to(gpu.cmd.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            check(ffgRecordV2(ctx.get(), gpu.cmd.Get(), &p, output.r.Get()));
             gpu.submit();
         };
         auto run = [&](float t0, float t1, const char *label, bool save) {
@@ -98,6 +142,65 @@ int main(int argc, char **argv)
             }
         };
         run(0, 0, "static", false);
+        {
+            auto nativeV2 = pairForV2();
+            generateV2(nativeV2);
+            auto v2Result = gpu.read(output, 4);
+            for (float value : v2Result)
+                if (!std::isfinite(value))
+                    throw std::runtime_error("native V2 output is not finite");
+            nativeV2.frames[1].resourceFlags |= FGDS_RESOURCE_HUD_MASK;
+            nativeV2.frames[1].flags |= FGDS_FRAME_HUD_MASK;
+            nativeV2.frames[1].hudMask = reinterpret_cast<void *>(uintptr_t(1));
+            gpu.begin();
+            if (ffgRecordV2(ctx.get(), gpu.cmd.Get(), &nativeV2, output.r.Get()) != E_NOTIMPL)
+                throw std::runtime_error("native V2 mask capability rejection");
+            gpu.submit();
+        }
+        {
+            // V3 reserves a descriptor heap per in-flight slot.  The first
+            // command list advertises the fence value that the host will
+            // signal after submission; trying to reuse the slot before that
+            // value completes must be rejected without recording work.
+            FfgContextV3 *rawV3 = nullptr;
+            check(ffgCreateV3(gpu.device.Get(), 2, &rawV3));
+            std::unique_ptr<FfgContextV3, decltype(&ffgDestroyV3)> v3(rawV3, ffgDestroyV3);
+            FgdsCapabilitiesV3 caps3{};
+            caps3.structSize = sizeof caps3;
+            check(ffgGetCapabilitiesV3(v3.get(), &caps3));
+            if (caps3.version != FGDS_VERSION_0_3 || caps3.slotCount != 2 ||
+                (caps3.featureFlags & FGDS_FEATURE_MULTI_FLIGHT) == 0)
+                throw std::runtime_error("native V3 capability negotiation regression");
+            auto nativeV2 = pairForV2();
+            auto output2 = gpu.texture(DXGI_FORMAT_R32G32B32A32_FLOAT,
+                                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+            gpu.begin();
+            output.to(gpu.cmd.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            output2.to(gpu.cmd.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            if (ffgRecordV3(v3.get(), gpu.cmd.Get(), &nativeV2, output.r.Get(), 0, nullptr, 0) !=
+                E_INVALIDARG)
+                throw std::runtime_error("native V3 fence requirement");
+            const UINT64 retire = gpu.serial + 1;
+            check(ffgRecordV3(v3.get(), gpu.cmd.Get(), &nativeV2, output.r.Get(), 0,
+                               gpu.fence.Get(), retire));
+            check(ffgRecordV3(v3.get(), gpu.cmd.Get(), &nativeV2, output2.r.Get(), 1,
+                               gpu.fence.Get(), retire));
+            if (ffgRecordV3(v3.get(), gpu.cmd.Get(), &nativeV2, output.r.Get(), 0,
+                            gpu.fence.Get(), retire) != DXGI_ERROR_WAS_STILL_DRAWING)
+                throw std::runtime_error("native V3 slot busy contract");
+            gpu.submit();
+            for (float value : gpu.read(output2, 4))
+                if (!std::isfinite(value))
+                    throw std::runtime_error("native V3 second slot output is not finite");
+            gpu.begin();
+            output.to(gpu.cmd.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            check(ffgRecordV3(v3.get(), gpu.cmd.Get(), &nativeV2, output.r.Get(), 0,
+                               gpu.fence.Get(), gpu.serial + 1));
+            gpu.submit();
+            for (float value : gpu.read(output, 4))
+                if (!std::isfinite(value))
+                    throw std::runtime_error("native V3 output is not finite");
+        }
         run(0, 0.25f, "translation", true);
         run(1.2f, 1.45f, "occlusion", false);
         run(0.25f, 0, "reverse", false);

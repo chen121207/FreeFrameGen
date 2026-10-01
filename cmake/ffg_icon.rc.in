@@ -1,0 +1,3 @@
+// Embedded application icon shared by the player GUI and command-line tools.
+#define IDI_FFG_ICON 101
+IDI_FFG_ICON ICON "@FFG_ICON_FILE@"
