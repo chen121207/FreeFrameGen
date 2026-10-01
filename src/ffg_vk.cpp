@@ -85,7 +85,15 @@ bool validFrame(const FgdsVkFrame& frame, VkDevice device, VkPhysicalDevice phys
 }
 
 VkImageView viewOf(const FgdsVkImage& image) {
+#if VK_USE_64_BIT_PTR_DEFINES
   return reinterpret_cast<VkImageView>(static_cast<uintptr_t>(image.view));
+#else
+  // Vulkan non-dispatchable handles are uint64_t on Win32.  A pointer-style
+  // reinterpret_cast is ill-formed there even though the FGDS wire value is
+  // still the same 64-bit handle.  Keep the conversion explicit for both
+  // Vulkan handle representations.
+  return static_cast<VkImageView>(image.view);
+#endif
 }
 
 bool imageDefined(const FgdsVkImage& image) {
@@ -524,7 +532,8 @@ extern "C" FFG_VK_API VkResult __cdecl ffgVkGetCapabilitiesV3(
                                 FGDS_VK_FEATURE_DEPTH_OCCLUSION |
                                 FGDS_VK_FEATURE_OBJECT_ID_REJECTION |
                                 FGDS_VK_FEATURE_CAMERA_CUT |
-                                FGDS_VK_FEATURE_MULTI_FLIGHT;
+                                FGDS_VK_FEATURE_MULTI_FLIGHT |
+                                FGDS_VK_FEATURE_HDR_METADATA;
   capabilities->colorFormat = FGDS_VK_FORMAT_RGBA32_FLOAT;
   capabilities->depthFormat = FGDS_VK_FORMAT_R32_FLOAT;
   capabilities->motionFormat = FGDS_VK_FORMAT_RG32_FLOAT;
@@ -578,4 +587,113 @@ extern "C" FFG_VK_API VkResult __cdecl ffgVkRecordV3(
     slot.retireValue = completionValue;
   }
   return result;
+}
+
+namespace {
+bool sharedAllZero(const uint32_t* values, size_t count) {
+  for (size_t i = 0; i < count; ++i) {
+    if (values[i] != 0)
+      return false;
+  }
+  return true;
+}
+
+bool vkHdrValid(const FgdsHdrMetadata& metadata) {
+  if (metadata.structSize < sizeof(FgdsHdrMetadata) ||
+      metadata.version != FGDS_HDR_VERSION_1 || metadata.reserved0 != 0 ||
+      (metadata.flags & ~FGDS_HDR_FLAGS) != 0 || !sharedAllZero(metadata.reserved, 4))
+    return false;
+  if (metadata.colorSpace > FGDS_HDR_COLOR_SPACE_HDR10_HLG ||
+      metadata.transferFunction < FGDS_HDR_TRANSFER_SRGB ||
+      metadata.transferFunction > FGDS_HDR_TRANSFER_HLG)
+    return false;
+  for (float value : metadata.primaries) {
+    if (!std::isfinite(value) || value < 0.0f || value > 1.0f)
+      return false;
+  }
+  for (float value : metadata.whitePoint) {
+    if (!std::isfinite(value) || value < 0.0f || value > 1.0f)
+      return false;
+  }
+  const float luminances[] = {metadata.maxMasteringLuminanceNits,
+                              metadata.minMasteringLuminanceNits,
+                              metadata.maxContentLightLevelNits,
+                              metadata.maxFrameAverageLightLevelNits,
+                              metadata.nominalPeakLuminanceNits};
+  for (float value : luminances) {
+    if (!std::isfinite(value) || value < 0.0f)
+      return false;
+  }
+  if (metadata.colorSpace == FGDS_HDR_COLOR_SPACE_SDR)
+    return metadata.transferFunction == FGDS_HDR_TRANSFER_SRGB ||
+           metadata.transferFunction == FGDS_HDR_TRANSFER_LINEAR;
+  if (metadata.maxMasteringLuminanceNits <= 0.0f ||
+      metadata.minMasteringLuminanceNits > metadata.maxMasteringLuminanceNits ||
+      metadata.nominalPeakLuminanceNits <= 0.0f)
+    return false;
+  if (metadata.colorSpace == FGDS_HDR_COLOR_SPACE_SCRGB)
+    return metadata.transferFunction == FGDS_HDR_TRANSFER_LINEAR;
+  if (metadata.colorSpace == FGDS_HDR_COLOR_SPACE_HDR10_PQ)
+    return metadata.transferFunction == FGDS_HDR_TRANSFER_PQ;
+  return metadata.transferFunction == FGDS_HDR_TRANSFER_HLG;
+}
+
+bool vkExternalHandleType(uint32_t type) {
+  return type == FGDS_SHARED_HANDLE_WIN32 || type == FGDS_SHARED_HANDLE_OPAQUE_FD;
+}
+}  // namespace
+
+extern "C" FFG_VK_API VkResult __cdecl ffgVkValidateHdrMetadata(
+    const FgdsHdrMetadata* metadata) {
+  if (!metadata)
+    return VK_ERROR_INITIALIZATION_FAILED;
+  return vkHdrValid(*metadata) ? VK_SUCCESS : VK_ERROR_VALIDATION_FAILED_EXT;
+}
+
+extern "C" FFG_VK_API VkResult __cdecl ffgVkValidateExternalImageV1(
+    const FgdsVkExternalImage* external) {
+  if (!external)
+    return VK_ERROR_INITIALIZATION_FAILED;
+  const auto& image = external->image;
+  if (external->structSize < sizeof(FgdsVkExternalImage) ||
+      external->version != FGDS_VK_EXTERNAL_VERSION_1 ||
+      external->imageLayout != FGDS_VK_EXTERNAL_LAYOUT_GENERAL ||
+      !sharedAllZero(external->reserved, 2) ||
+      image.structSize < sizeof(FgdsSharedImage) ||
+      image.version != FGDS_SHARED_VERSION_1 ||
+      image.backend != FGDS_SHARED_BACKEND_VULKAN || image.width == 0 || image.height == 0 ||
+      image.arrayLayers != 1 || image.mipLevels != 1 || image.sampleCount != 1 ||
+      (image.flags & ~(FGDS_SHARED_IMAGE_SHADER_RESOURCE |
+                       FGDS_SHARED_IMAGE_UNORDERED_ACCESS |
+                       FGDS_SHARED_IMAGE_IMPORTED)) != 0 ||
+      !(image.flags & FGDS_SHARED_IMAGE_SHADER_RESOURCE) || image.handleType == 0 ||
+      !vkExternalHandleType(image.handleType) || image.resourceHandle == 0 ||
+      image.adapterLuid == 0 || image.reserved0 != 0 || !sharedAllZero(image.reserved, 4))
+    return VK_ERROR_VALIDATION_FAILED_EXT;
+  if (image.format != FGDS_VK_FORMAT_RGBA32_FLOAT && image.format != FGDS_VK_FORMAT_R32_FLOAT &&
+      image.format != FGDS_VK_FORMAT_RG32_FLOAT && image.format != FGDS_VK_FORMAT_R32_UINT)
+    return VK_ERROR_VALIDATION_FAILED_EXT;
+  // A Vulkan image is recreated in the consumer process from the exported
+  // allocation.  Passing a producer VkImage handle or an auxiliary D3D12
+  // handle would make the descriptor process-local and is rejected.
+  if (image.auxHandle != 0)
+    return VK_ERROR_VALIDATION_FAILED_EXT;
+  return VK_SUCCESS;
+}
+
+extern "C" FFG_VK_API VkResult __cdecl ffgVkValidateExternalSyncV1(
+    const FgdsVkExternalSync* external) {
+  if (!external)
+    return VK_ERROR_INITIALIZATION_FAILED;
+  const auto& sync = external->sync;
+  if (external->structSize < sizeof(FgdsVkExternalSync) ||
+      external->version != FGDS_VK_EXTERNAL_VERSION_1 ||
+      external->semaphoreType != FGDS_VK_EXTERNAL_SEMAPHORE_TIMELINE ||
+      !sharedAllZero(external->reserved, 2) || sync.structSize < sizeof(FgdsSharedSync) ||
+      sync.version != FGDS_SHARED_VERSION_1 || sync.backend != FGDS_SHARED_BACKEND_VULKAN ||
+      sync.type != FGDS_SHARED_SYNC_VULKAN_TIMELINE || !vkExternalHandleType(sync.handleType) ||
+      sync.flags != 0 || sync.reserved0 != 0 || sync.adapterLuid == 0 ||
+      sync.fenceHandle == 0 || sync.value == 0 || !sharedAllZero(sync.reserved, 4))
+    return VK_ERROR_VALIDATION_FAILED_EXT;
+  return VK_SUCCESS;
 }

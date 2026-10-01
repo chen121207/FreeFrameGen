@@ -8,11 +8,13 @@
  * producer remains responsible for device ownership and synchronization.
  */
 #include <stdint.h>
+#include "ipc.h"
 
 #define FGDS_VK_VERSION 0x00010000u
 #define FGDS_VK_VERSION_0_1 FGDS_VK_VERSION
 #define FGDS_VK_VERSION_0_2 0x00020000u
 #define FGDS_VK_VERSION_0_3 0x00030000u
+#define FGDS_VK_VERSION_0_4 0x00040000u
 #define FGDS_VK_CAMERA_CUT 1u
 #define FGDS_VK_BACKEND_VULKAN 2u
 
@@ -43,7 +45,36 @@
 #define FGDS_VK_FEATURE_OBJECT_ID_REJECTION (1ull << 3)
 #define FGDS_VK_FEATURE_CAMERA_CUT (1ull << 4)
 #define FGDS_VK_FEATURE_MULTI_FLIGHT (1ull << 5)
+#define FGDS_VK_FEATURE_HDR_METADATA (1ull << 6)
+#define FGDS_VK_FEATURE_SHARED_RESOURCES (1ull << 7)
 #define FGDS_VK_V3_MAX_SLOTS 8u
+
+// External-memory/semaphore descriptors are deliberately separate from the
+// same-process FgdsVkImage/FgdsVkSync values above.  A VkImage/VkSemaphore
+// handle is never sent across a process boundary; only the exported memory or
+// semaphore handle plus image creation metadata is transported.
+#define FGDS_VK_EXTERNAL_VERSION_1 0x00010000u
+#define FGDS_VK_EXTERNAL_LAYOUT_GENERAL 1u // VkImageLayout::VK_IMAGE_LAYOUT_GENERAL
+#define FGDS_VK_EXTERNAL_SEMAPHORE_TIMELINE 1u
+#define FGDS_VK_EXTERNAL_QUEUE_FAMILY_IGNORED 0xffffffffu
+typedef struct FgdsVkExternalImage
+{
+    uint32_t structSize;
+    uint32_t version;
+    FgdsSharedImage image; // backend must be FGDS_SHARED_BACKEND_VULKAN.
+    uint32_t imageLayout;  // Must be GENERAL at the FGDS compute boundary.
+    uint32_t queueFamily;
+    uint32_t reserved[2];
+} FgdsVkExternalImage;
+
+typedef struct FgdsVkExternalSync
+{
+    uint32_t structSize;
+    uint32_t version;
+    FgdsSharedSync sync; // type must be FGDS_SHARED_SYNC_VULKAN_TIMELINE.
+    uint32_t semaphoreType; // Must be the timeline semaphore type (1).
+    uint32_t reserved[2];
+} FgdsVkExternalSync;
 
 typedef struct FgdsVkImage
 {

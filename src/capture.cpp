@@ -9,6 +9,7 @@ int main(int argc, char **argv)
         int selected = -1, selectedWindow = -1, seconds = 0, width = 960;
         double deadlineMs = 24.0;
         bool list = false, listWindows = false, headless = false, debug = false, selfTest = false;
+        bool borderless = false, hdrOutput = false;
         for (int i = 1; i < argc; ++i)
         {
             std::string a = argv[i];
@@ -20,6 +21,10 @@ int main(int argc, char **argv)
                 headless = true;
             else if (a == "--debug")
                 debug = true;
+            else if (a == "--fullscreen" || a == "--borderless" || a == "--replace")
+                borderless = true;
+            else if (a == "--hdr-output" || a == "--hdr")
+                hdrOutput = true;
             else if (a == "--self-test")
                 selfTest = true;
             else if (a == "--output" && i + 1 < argc)
@@ -36,11 +41,15 @@ int main(int argc, char **argv)
             {
                 std::cout << "FFG capture: --list | --list-windows | --output N [--window N] "
                              "[--seconds N] [--width 320..1920] [--deadline-ms 4..100] "
-                             "[--debug] [--headless]\n"
+                             "[--debug] [--headless] [--fullscreen|--replace] [--hdr-output]\n"
                           << "No arguments: interactive display selection. Preview: SPACE toggles "
                              "FG, ESC stops.\n"
                           << "--window captures a visible window client area; use --list-windows "
                              "to choose one. Without --output its monitor is selected.\n"
+                          << "--fullscreen/--replace uses an FFG-owned borderless topmost window "
+                             "over the selected monitor; it never injects into a game.\n"
+                          << "--hdr-output requests an FP16 scRGB swapchain and Windows color-space "
+                             "tag; the Desktop Duplication source remains SDR BGRA8.\n"
                           << "--self-test runs the capture history guard without touching the desktop.\n";
                 return 0;
             }
@@ -148,7 +157,10 @@ int main(int argc, char **argv)
             std::cout << (window ? "FFG captures the selected window client area locally. No "
                                  : "FFG captures the ENTIRE selected display locally. No ")
                       << "recording/upload/injection.\n"
-                      << "SDR experimental preview, not a low-latency/fullscreen product.\n"
+                      << (borderless ? "Borderless replacement output enabled.\n"
+                                     : "Windowed preview output enabled.\n")
+                      << (hdrOutput ? "HDR output requested (scRGB FP16; source is SDR BGRA8).\n"
+                                    : "SDR output.\n")
                       << "Enter display index to start (Ctrl+C cancels): " << std::flush;
             if (!(std::cin >> selected))
                 return 0;
@@ -177,7 +189,9 @@ int main(int argc, char **argv)
         auto current =
             gpu.texture(DXGI_FORMAT_R32G32B32A32_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
         if (!headless)
-            gpu.openWindow(L"FreeFrameGen - experimental capture: real / generated", true);
+            gpu.openWindow(L"FreeFrameGen - capture replacement output", true,
+                           borderless ? PresentMode::Borderless : PresentMode::Windowed,
+                           o.desc.Monitor, hdrOutput);
         LARGE_INTEGER freq{};
         QueryPerformanceFrequency(&freq);
         LONGLONG last = 0, stamp = 0;

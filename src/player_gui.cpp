@@ -30,6 +30,8 @@ constexpr int IDC_STOP = 1007;
 constexpr int IDC_DOCS = 1008;
 constexpr int IDC_STATUS = 1009;
 constexpr int IDC_DETAILS = 1010;
+constexpr int IDC_FULLSCREEN = 1011;
+constexpr int IDC_HDR = 1012;
 
 struct Source
 {
@@ -46,6 +48,8 @@ struct AppState
     HWND deadline = nullptr;
     HWND status = nullptr;
     HWND details = nullptr;
+    HWND fullscreen = nullptr;
+    HWND hdr = nullptr;
     HANDLE child = nullptr;
     DWORD childPid = 0;
     std::vector<Source> displays;
@@ -313,6 +317,10 @@ bool startCapture(AppState &state)
     if (sourceIndex > 0 && sourceIndex - 1 < static_cast<int>(state.windows.size()))
         command += L" --window " +
                    std::to_wstring(state.windows[static_cast<size_t>(sourceIndex - 1)].index);
+    if (SendMessageW(state.fullscreen, BM_GETCHECK, 0, 0) == BST_CHECKED)
+        command += L" --replace";
+    if (SendMessageW(state.hdr, BM_GETCHECK, 0, 0) == BST_CHECKED)
+        command += L" --hdr-output";
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
@@ -331,6 +339,8 @@ bool startCapture(AppState &state)
     EnableWindow(state.sourceWindow, FALSE);
     EnableWindow(state.width, FALSE);
     EnableWindow(state.deadline, FALSE);
+    EnableWindow(state.fullscreen, FALSE);
+    EnableWindow(state.hdr, FALSE);
     EnableWindow(GetDlgItem(state.window, IDC_REFRESH), FALSE);
     EnableWindow(GetDlgItem(state.window, IDC_START), FALSE);
     EnableWindow(GetDlgItem(state.window, IDC_STOP), TRUE);
@@ -347,6 +357,8 @@ void stopCapture(AppState &state)
     EnableWindow(state.sourceWindow, TRUE);
     EnableWindow(state.width, TRUE);
     EnableWindow(state.deadline, TRUE);
+    EnableWindow(state.fullscreen, TRUE);
+    EnableWindow(state.hdr, TRUE);
     EnableWindow(GetDlgItem(state.window, IDC_REFRESH), TRUE);
     EnableWindow(GetDlgItem(state.window, IDC_START), TRUE);
     EnableWindow(GetDlgItem(state.window, IDC_STOP), FALSE);
@@ -376,6 +388,19 @@ HWND button(HWND parent, const wchar_t *text, int id, int x, int y, int width, i
                                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
                                    GetModuleHandleW(nullptr), nullptr);
     SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    return control;
+}
+
+HWND checkBox(HWND parent, const wchar_t *text, int id, int x, int y, int width, int height,
+              HFONT font, bool checked = false)
+{
+    HWND control = CreateWindowExW(0, L"BUTTON", text,
+                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, x, y,
+                                   width, height, parent,
+                                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+                                   GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    SendMessageW(control, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
     return control;
 }
 
@@ -417,8 +442,12 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         case IDC_DETAILS:
             MessageBoxW(hwnd,
                         L"捕获模式只在本机 GPU 上处理画面，不录像、不上传、不注入游戏。\n"
+                        L"全屏替换输出是 FFG 自己的 borderless topmost 窗口；它不会接管游戏 swapchain。\n"
+                        L"HDR 输出使用 FP16 scRGB 和 Windows 色彩空间标签，源捕获仍是 SDR BGRA8。\n"
                         L"Native 模式请使用 include/ffg 与 FGDS 协议。\n\n"
                         L"Capture stays local on the GPU. It does not record, upload or inject.\n"
+                        L"Replacement output is an FFG-owned borderless topmost window, not game injection.\n"
+                        L"HDR uses an FP16 scRGB swapchain; Desktop Duplication input remains SDR BGRA8.\n"
                         L"Use the FGDS headers for native engine integration.",
                         L"FreeFrameGen", MB_OK | MB_ICONINFORMATION);
             return 0;
@@ -507,8 +536,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show)
                                      window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_DEADLINE)),
                                      instance, nullptr);
     button(window, L"刷新 / Refresh", IDC_REFRESH, 575, 264, 110, 32, normal);
-    label(window, L"启动后会打开独立预览窗口；关闭预览窗口或点击停止即可结束。",
-          39, 310, 650, 25, normal);
+    state.fullscreen = checkBox(window, L"全屏替换输出 / Borderless replacement", IDC_FULLSCREEN,
+                                39, 310, 285, 28, normal, false);
+    state.hdr = checkBox(window, L"HDR 输出 / scRGB FP16 output", IDC_HDR, 340, 310, 300, 28,
+                         normal, false);
+    label(window, L"替换模式覆盖所选显示器，不注入游戏；HDR 需要显示器支持 scRGB。",
+          39, 335, 650, 22, normal);
     state.status = label(window, L"正在读取显示器… / Loading sources…", 39, 348, 650, 28, normal);
     state.details = label(window, L"", 39, 380, 650, 22, normal);
     button(window, L"开始 / Start", IDC_START, 405, 419, 105, 36, normal);

@@ -72,6 +72,15 @@ FFG_VK_API VkResult __cdecl ffgVkRecordV3(FfgVkContextV3* context,
     VkCommandBuffer commandBuffer, const FgdsVkPairV2* pair,
     const FgdsVkImage* output, uint32_t slotIndex,
     VkSemaphore completionSemaphore, uint64_t completionValue);
+
+// v0.4 external transport validators.  They only validate protocol fields;
+// they do not import OS handles or prove that a driver supports the requested
+// external-memory/semaphore combination.
+FFG_VK_API VkResult __cdecl ffgVkValidateHdrMetadata(const FgdsHdrMetadata* metadata);
+FFG_VK_API VkResult __cdecl ffgVkValidateExternalImageV1(
+    const FgdsVkExternalImage* image);
+FFG_VK_API VkResult __cdecl ffgVkValidateExternalSyncV1(
+    const FgdsVkExternalSync* sync);
 #ifdef __cplusplus
 }
 #endif

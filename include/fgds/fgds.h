@@ -1,6 +1,7 @@
 #pragma once
 // FGDS 0.1/0.2/0.3 experimental, same-process D3D12 contract. Not a stable standard.
 #include <stdint.h>
+#include "ipc.h"
 #ifdef __cplusplus
 #include <d3d12.h>
 extern "C"
@@ -82,6 +83,12 @@ extern "C"
 #define FGDS_FEATURE_DEPTH_OCCLUSION (1ull << 2)
 #define FGDS_FEATURE_OBJECT_ID_REJECTION (1ull << 3)
 #define FGDS_FEATURE_CAMERA_CUT (1ull << 4)
+// v0.4 advertises transport capabilities separately from the frozen v0.1,
+// v0.2 and v0.3 record entry points.  A bit is only set once the runtime can
+// validate/import the corresponding descriptor; it does not imply that a
+// caller's adapter or driver supports every external-handle extension.
+#define FGDS_FEATURE_HDR_METADATA (1ull << 6)
+#define FGDS_FEATURE_SHARED_RESOURCES (1ull << 7)
 
     typedef struct FgdsCapabilities
     {

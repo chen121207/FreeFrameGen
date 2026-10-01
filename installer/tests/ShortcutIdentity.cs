@@ -7,7 +7,7 @@ using System.Collections.Generic;
 internal static class Product
 {
     internal const string Id="FFG-Shortcut-Contract-Test", Folder="FFGShortcutTest", DisplayName=Folder;
-    internal const string Version="0.3.0", Description="Test", Exe="unused.exe", Url="", LaunchArgs="";
+    internal const string Version="0.4.0", Description="Test", Exe="unused.exe", Url="", LaunchArgs="";
     internal static Dictionary<string,string> Manifest(){return new Dictionary<string,string>();}
 }
 internal static class ShortcutIdentityTests

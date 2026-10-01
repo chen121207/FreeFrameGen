@@ -1,4 +1,4 @@
-# FGDS Vulkan 0.1 / 0.2 / 0.3
+# FGDS Vulkan 0.1 / 0.2 / 0.3 / 0.4
 
 include/fgds/fgds_vk.h 是 FFG 的 Vulkan 原生输入契约。它与现有
 D3D12 版 FGDS 分开，避免把 DXVK 的 Vulkan 设备强行转换成 D3D12 设备。
@@ -96,3 +96,23 @@ V3 context 创建要求设备支持 `vkGetSemaphoreCounterValue`（Vulkan 1.2 �
 V3 仍拒绝 HUD/transparency mask（返回 `VK_ERROR_FEATURE_NOT_PRESENT`），
 因为当前 shader 没有 mask-aware 路径。`FgdsVkCapabilitiesV3.featureFlags`
 只有在可创建 V3 context 时才包含 `FGDS_VK_FEATURE_MULTI_FLIGHT`。
+
+## v0.4 HDR 与外部对象描述
+
+Vulkan 共享传输复用 `include/fgds/ipc.h` 的 `FgdsHdrMetadata`、
+`FgdsSharedImage` 和 `FgdsSharedSync`，并在 `fgds_vk.h` 增加
+`FgdsVkExternalImage`/`FgdsVkExternalSync`。跨进程边界只传递外部 memory 或
+timeline semaphore 的导出句柄和创建元数据，不能传递 producer 进程里的
+`VkImage`、`VkImageView` 或 `VkSemaphore` 数值。
+
+外部 image 必须声明 `VK_IMAGE_LAYOUT_GENERAL`、单 mip/层/采样、有效宽高与
+`FGDS_VK_FORMAT_*` 协议格式，且使用 Win32 或 opaque FD 句柄。外部 sync 必须是
+timeline semaphore、非零 handle/value，并与 image 使用相同 adapter 标识。消费者
+要在自己的 `VkDevice` 中导入 memory 后重新创建 image/view，再按 queue-family
+规则完成 ownership/barrier；当前 FFG 仅提供 `ffgVkValidateExternalImageV1`、
+`ffgVkValidateExternalSyncV1` 和 HDR 校验入口，尚未在 Vulkan runtime 内替调用方
+导入对象或提交跨进程 queue wait。
+
+`vulkan_external_protocol` 测试使用伪句柄验证布局、格式、句柄类型、timeline 值
+和 HDR 范围。它是协议/静态验证，不是两个进程之间的真实 Vulkan external-memory
+运行证明；真实 driver 支持仍需在目标 GPU 与目标游戏中单独验证。

@@ -58,3 +58,29 @@ This is still an experimental preview. It does not provide in-game injection, cr
 
 The published installer is accompanied by `FreeFrameGen-Setup-0.3.0-x64.exe.sha256`.
 Use that sidecar file to verify the exact binary downloaded from the Beta release.
+
+## Release status and stable gate / 发布状态与正式版门槛
+
+This tag is intentionally **beta**, not `v1.0.0 stable`. The checks listed in
+this file prove the beta artifacts and the tested synthetic/capture paths; they
+do not prove universal game compatibility. In particular, the beta does not
+claim HDR output, cross-process native texture/fence transport, production
+full-screen replacement, an end-to-end latency number, Authenticode signing,
+VAC approval, or parity with Lossless Scaling.
+
+Do not retag this commit as a stable release after adding code elsewhere. A
+future release must pass the evidence gates in
+[`docs/RELEASE_GATE.md`](RELEASE_GATE.md), including a real host/game matrix,
+HDR and output recovery, cross-process lifetime/security tests, long-run
+latency measurements, clean-runner packaging, and signed artifacts. The beta
+installer remains useful for previewing the current capture path, but its
+limitations are release blockers for `v1.0.0`.
+
+本标签明确是 **Beta**，不是 `v1.0.0 stable`。这里的测试只证明 Beta 安装包以及
+当前合成/捕获路径的已测行为，不能证明“所有游戏兼容”。本 Beta 不承诺 HDR 输出、
+跨进程纹理/fence 传输、生产级全屏替换、端到端延迟数值、数字签名、VAC 认可，或与
+Lossless Scaling 完全一致。
+
+正式版必须按 [`docs/RELEASE_GATE.md`](RELEASE_GATE.md) 补齐真实宿主/游戏矩阵、
+HDR 和输出恢复、跨进程生命周期与安全、长期延迟测量、干净 runner 打包以及签名
+证据；不能因为其他提交后来加入了代码，就把这个旧 Beta 标签重新描述为 stable。

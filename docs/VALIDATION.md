@@ -119,3 +119,49 @@ GitHub Actions 工作流已提供；本文件只记录本机执行结果，不�
   旧开始菜单残留入口阻止，未把“安装器可编译”当作“本次安装回归通过”。
 - `cmake --install` 生成的独立 v0.3 package 通过 `tools/test-install.ps1`：安装、
   修改文件保护、路径遍历拒绝和额外用户文件保留均通过；测试目录位于临时目录并已清理。
+
+## v0.3 beta release audit / v0.3 Beta 发布审计（2026-10-01）
+
+- Remote tag `v0.3.0-beta.1` points at the player-installer release commit.
+  The tag and package are intentionally Beta; this is not a `v1.0.0 stable`
+  compatibility claim.
+- `tools/test-release-artifact.ps1` verifies the published installer’s sidecar
+  filename, 64-digit SHA256 value, actual file hash, and non-empty artifact.
+  The same check is now part of `.github/workflows/windows.yml`; a local pass
+  does not imply the hosted workflow has run for a later commit.
+- The release gate remains open for HDR/scRGB/HDR10, cross-process resource and
+  fence transport, production full-screen output, access-lost/device-removal
+  recovery, real-game quality and latency matrices, long-run soak, signing,
+  and any game/anti-cheat compatibility evidence. See
+  [`docs/RELEASE_GATE.md`](RELEASE_GATE.md).
+
+这份记录区分“代码存在”“本机验证”“CI 验证”和“真实游戏验证”。任何一项仍是
+`not verified` 时，不得把 Beta 重新描述为正式稳定版；内部 flow 等待均值也不能
+替代输入到显示的端到端延迟测量。
+
+## v0.4.0 first public release verification / 首个公开发布版验证（2026-10-01）
+
+- Fresh D3D12 Release tree `build-v04-a` configured with VS 2026 / Windows SDK
+  10.0.26100.0 and built successfully. CTest **10/10** passed, including
+  `shared_protocol_test`.
+- Fresh top-level Vulkan tree `build-v04-vulkan` configured with explicit
+  Vulkan-Headers and `glslangValidator`, built successfully. CTest **12/12**
+  passed, including `vulkan_v3_smoke` and `vulkan_external_protocol`.
+- D3D12 shared transport code was compiled and its protocol test passed. The
+  test uses deliberately fake handles and proves only metadata, adapter-LUID,
+  resource/fence fields, mask rejection and HDR validation. A real two-process
+  producer/consumer game host has not been claimed.
+- RTX 3050 real Desktop Duplication runs completed with
+  `--replace --seconds 1 --width 640` and
+  `--replace --hdr-output --seconds 1 --width 640`; both captured and generated
+  frames and exited cleanly. The HDR run verifies scRGB FP16 swapchain creation
+  and color-space support on this display, not HDR10 source passthrough or
+  end-to-end HDR image accuracy.
+- The public release package is built from the same source line as
+  `FreeFrameGen-Setup-0.4.0-x64.exe`; verify its sidecar with
+  `tools/test-release-artifact.ps1`. The package remains unsigned and the full
+  installer GUI regression is still affected by the pre-existing stale Start
+  Menu shortcut documented above.
+- The capture path still has no game DLL injection. Native mode remains an
+  explicit developer protocol; no universal game compatibility, zero-latency,
+  VRR, anti-cheat or Lossless Scaling parity claim is made.

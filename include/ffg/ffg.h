@@ -52,6 +52,25 @@ extern "C"
                                         const FgdsPairV2 *, ID3D12Resource *output,
                                         uint32_t slotIndex, ID3D12Fence *completionFence,
                                         uint64_t completionValue);
+
+    // v0.4 transport helpers.  These entries are additive; the frozen v0.1
+    // through v0.3 ABI and entry points above are unchanged.  Validation is
+    // side-effect free and can be used before opening any OS handles.
+    FFG_API HRESULT __cdecl ffgValidateHdrMetadata(const FgdsHdrMetadata *metadata);
+    FFG_API HRESULT __cdecl ffgValidateSharedPairV1(const FgdsSharedPair *pair);
+
+    // Imports D3D12 shared resources/fences, schedules queue waits for both
+    // producer ready values, and records the same compute kernel as V3.  It
+    // does not submit or signal the command list.  The host must signal
+    // pair->retire.value on pair->retire.fenceHandle after ExecuteCommandLists.
+    // Imported COM objects are retained by the selected slot until its retire
+    // fence reaches the supplied value.  A matching adapter LUID and Win32/NT
+    // shared-handle type are required.
+    FFG_API HRESULT __cdecl ffgRecordSharedV1(FfgContextV3 *context,
+                                               ID3D12CommandQueue *queue,
+                                               ID3D12GraphicsCommandList *list,
+                                               const FgdsSharedPair *pair,
+                                               uint32_t slotIndex);
 #ifdef __cplusplus
 }
 #endif

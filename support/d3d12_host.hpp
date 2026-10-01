@@ -62,6 +62,16 @@ struct Texture
         state = s;
     }
 };
+// FFG owns a separate presentation swap chain. Borderless is the safe
+// full-screen replacement path: it covers the selected monitor without
+// touching the game's process or swap chain. Exclusive SetFullscreenState is
+// intentionally not used because it is session/driver dependent and can make
+// Desktop Duplication lose access.
+enum class PresentMode
+{
+    Windowed,
+    Borderless,
+};
 inline LRESULT CALLBACK windowProc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
     if (m == WM_CLOSE)
@@ -96,6 +106,10 @@ struct Gpu
     UINT64 serial = 0;
     HWND window = nullptr;
     bool debug = false;
+    PresentMode presentMode = PresentMode::Windowed;
+    bool hdrOutput = false;
+    UINT presentWidth = 0, presentHeight = 0;
+    HMONITOR presentMonitor = nullptr;
     Gpu(bool warp, bool wantDebug, IDXGIAdapter1 *selected = nullptr, UINT w = W, UINT h = H)
         : width(w), height(h)
     {
@@ -288,20 +302,46 @@ struct Gpu
             }
         }
     }
-    void openWindow(const wchar_t *title, bool excludeCapture = false)
+    void openWindow(const wchar_t *title, bool excludeCapture = false,
+                    PresentMode mode = PresentMode::Windowed, HMONITOR monitor = nullptr,
+                    bool requestHdr = false)
     {
+        presentMode = mode;
+        presentMonitor = monitor;
+        hdrOutput = requestHdr;
+        presentWidth = width;
+        presentHeight = height;
         WNDCLASSW wc{};
         wc.lpfnWndProc = windowProc;
         wc.hInstance = GetModuleHandleW(nullptr);
         wc.lpszClassName = L"D3D12ResearchDemo";
         RegisterClassW(&wc);
+        DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
         RECT rc{0, 0, LONG(width), LONG(height)};
-        AdjustWindowRect(&rc, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, FALSE);
-        window = CreateWindowW(wc.lpszClassName, title, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-                               CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top,
-                               nullptr, nullptr, wc.hInstance, nullptr);
+        int x = CW_USEDEFAULT, y = CW_USEDEFAULT;
+        if (mode == PresentMode::Borderless)
+        {
+            style = WS_POPUP;
+            if (!monitor)
+                monitor = MonitorFromWindow(GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY);
+            MONITORINFO mi{sizeof(mi)};
+            if (!GetMonitorInfoW(monitor, &mi))
+                throw std::runtime_error("GetMonitorInfo");
+            x = mi.rcMonitor.left;
+            y = mi.rcMonitor.top;
+            presentWidth = UINT(std::max<LONG>(1, mi.rcMonitor.right - mi.rcMonitor.left));
+            presentHeight = UINT(std::max<LONG>(1, mi.rcMonitor.bottom - mi.rcMonitor.top));
+            rc = {0, 0, LONG(presentWidth), LONG(presentHeight)};
+        }
+        else
+            AdjustWindowRect(&rc, style, FALSE);
+        window = CreateWindowW(wc.lpszClassName, title, style, x, y, rc.right - rc.left,
+                               rc.bottom - rc.top, nullptr, nullptr, wc.hInstance, nullptr);
         if (!window)
             throw std::runtime_error("CreateWindow");
+        if (mode == PresentMode::Borderless)
+            SetWindowPos(window, HWND_TOPMOST, x, y, LONG(presentWidth), LONG(presentHeight),
+                         SWP_NOACTIVATE | SWP_SHOWWINDOW);
         if (excludeCapture)
         {
             DWORD affinity = 0;
@@ -311,9 +351,12 @@ struct Gpu
                     "Capture exclusion unavailable; refusing recursive capture");
         }
         DXGI_SWAP_CHAIN_DESC1 d{};
-        d.Width = width;
-        d.Height = height;
-        d.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        d.Width = presentWidth;
+        d.Height = presentHeight;
+        // scRGB FP16 is the safe HDR output path: it carries linear values
+        // and an explicit Windows color-space tag without claiming HDR10
+        // mastering metadata for an SDR Desktop Duplication source.
+        d.Format = requestHdr ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
         d.SampleDesc.Count = 1;
         d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         d.BufferCount = 2;
@@ -322,6 +365,15 @@ struct Gpu
         ComPtr<IDXGISwapChain1> s;
         check(factory->CreateSwapChainForHwnd(queue.Get(), window, &d, nullptr, nullptr, &s));
         check(s.As(&swap));
+        if (requestHdr)
+        {
+            UINT support = 0;
+            const auto colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
+            if (FAILED(swap->CheckColorSpaceSupport(colorSpace, &support)) ||
+                !(support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT))
+                throw std::runtime_error("Selected display does not support scRGB HDR output");
+            check(swap->SetColorSpace1(colorSpace));
+        }
         check(swap->SetMaximumFrameLatency(1));
         latency = swap->GetFrameLatencyWaitableObject();
         check(factory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER));
@@ -341,15 +393,32 @@ struct Gpu
         hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         check(device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&presentSrv)));
         D3D12_DESCRIPTOR_RANGE range{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, 0};
-        D3D12_ROOT_PARAMETER param{};
-        param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        param.DescriptorTable = {1, &range};
-        D3D12_ROOT_SIGNATURE_DESC rs{1, &param, 0, nullptr,
+        D3D12_ROOT_PARAMETER params[2]{};
+        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[0].DescriptorTable = {1, &range};
+        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[1].Constants = {0, 0, 4};
+        D3D12_STATIC_SAMPLER_DESC presentSampler{};
+        presentSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+        presentSampler.AddressU = presentSampler.AddressV = presentSampler.AddressW =
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        presentSampler.MaxLOD = D3D12_FLOAT32_MAX;
+        D3D12_ROOT_SIGNATURE_DESC rs{2, params, 1, &presentSampler,
                                      D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT};
         presentRoot = root(device.Get(), rs);
-        const char *shader = R"(Texture2D<float4> img:register(t0);
+        const char *shader = R"(Texture2D<float4> img:register(t0);SamplerState samp:register(s0);
+cbuffer Present:register(b0){uint dstW;uint dstH;uint hdr;uint pad;}
 float4 vs(uint id:SV_VertexID):SV_Position {float2 p=float2((id<<1)&2,id&2);return float4(p*float2(2,-2)+float2(-1,1),0,1);}
-float4 ps(float4 p:SV_Position):SV_Target {float3 c=saturate(img.Load(int3(p.xy,0)).rgb);return float4(lerp(1.055*pow(c,1.0/2.4)-.055,12.92*c,step(c,.0031308)),1);})";
+float3 srgb(float3 c){c=saturate(c);return lerp(1.055*pow(c,1.0/2.4)-.055,12.92*c,step(c,.0031308));}
+float4 ps(float4 p:SV_Position):SV_Target {
+ uint sw,sh;img.GetDimensions(sw,sh);
+ float2 uv=p.xy/float2(max(dstW,1),max(dstH,1));
+ float srcAspect=float(sw)/max(float(sh),1);float dstAspect=float(dstW)/max(float(dstH),1);
+ if(srcAspect>dstAspect){float scale=dstAspect/srcAspect;uv.x=(uv.x-.5)/scale+.5;}
+ else if(srcAspect<dstAspect){float scale=srcAspect/dstAspect;uv.y=(uv.y-.5)/scale+.5;}
+ float3 c=img.SampleLevel(samp,uv,0).rgb;
+ return float4(hdr?c:srgb(c),1);
+})";
         auto vs = compile(shader, "vs", "vs_5_1"), ps = compile(shader, "ps", "ps_5_1");
         D3D12_GRAPHICS_PIPELINE_STATE_DESC p{};
         p.pRootSignature = presentRoot.Get();
@@ -410,8 +479,10 @@ float4 ps(float4 p:SV_Position):SV_Target {float3 c=saturate(img.Load(int3(p.xy,
         ID3D12DescriptorHeap *heaps[] = {presentSrv.Get()};
         cmd->SetDescriptorHeaps(1, heaps);
         cmd->SetGraphicsRootDescriptorTable(0, presentSrv->GetGPUDescriptorHandleForHeapStart());
-        D3D12_VIEWPORT vp{0, 0, float(width), float(height), 0, 1};
-        D3D12_RECT sc{0, 0, LONG(width), LONG(height)};
+        const UINT constants[4] = {presentWidth, presentHeight, hdrOutput ? 1u : 0u, 0u};
+        cmd->SetGraphicsRoot32BitConstants(1, 4, constants, 0);
+        D3D12_VIEWPORT vp{0, 0, float(presentWidth), float(presentHeight), 0, 1};
+        D3D12_RECT sc{0, 0, LONG(presentWidth), LONG(presentHeight)};
         cmd->RSSetViewports(1, &vp);
         cmd->RSSetScissorRects(1, &sc);
         cmd->OMSetRenderTargets(1, &rtv, FALSE, nullptr);

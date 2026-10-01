@@ -1,4 +1,4 @@
-# FGDS 0.1 / 0.2 / 0.3 草案：同进程 D3D12 输入契约
+# FGDS 0.1 / 0.2 / 0.3 / 0.4 草案：同进程与共享 D3D12 输入契约
 
 这是两个实验项目之间的最小约定，不是正式行业标准。FFG 是当前协议头文件
 `include/fgds/fgds.h` 的维护来源。先前 v0.1 快照曾与 Renderer 仓库同步；本次
@@ -123,3 +123,33 @@ slot 仍禁止并发调用。`ffgDestroyV3` 前必须等待所有已绑定 fence
 V3 的能力结构会报告实际 `slotCount`、`maxSlots` 和 `FGDS_FEATURE_MULTI_FLIGHT`。
 它没有改变 shader 算法或跨进程语义；多 slot 只解决 descriptor/调度在途安全，不能
 替代游戏提供真实、同步且与端点严格对应的 motion/depth/object 数据。
+
+## v0.4 HDR 与跨进程共享（D3D12）
+
+`include/fgds/ipc.h` 增加了不含 D3D12 类型的追加式传输结构：
+`FgdsHdrMetadata`、`FgdsSharedImage`、`FgdsSharedSync`、`FgdsSharedFrame` 和
+`FgdsSharedPair`。旧的 `FgdsFrame`、`FgdsPair`、V2、V3 结构和入口都没有改动。
+
+HDR 元数据包含色域、传输函数、RGB 原色/白点、mastering luminance、MaxCLL、
+MaxFALL 与目标峰值亮度。当前支持 SDR/sRGB、scRGB/linear、HDR10/PQ 和
+HDR10/HLG。两个输入帧以及输出目标的 HDR 元数据必须完全一致；不能把 PQ 帧标成
+sRGB，也不能使用负亮度值。`ffgValidateHdrMetadata` 是无副作用校验入口。
+
+跨进程描述符只传输由生产者导出并复制到消费者进程的共享句柄数值，不传递进程内
+`ID3D12Resource*`。每个 `FgdsSharedImage` 必须提供 adapter LUID、宽高/格式/单
+mip/单层/单采样、句柄类型和资源句柄。每个 `FgdsSharedSync` 提供共享 fence 句柄
+与非零值。消费者调用 `ffgRecordSharedV1` 时会：
+
+1. 用 `ID3D12Device::OpenSharedHandle` 打开四个核心输入、输出和 fence；
+2. 校验所有资源属于同一设备/adapter LUID，且描述符格式与尺寸匹配；
+3. 在传入的命令队列上对两枚 ready fence 调用 `ID3D12CommandQueue::Wait`；
+4. 使用 V3 slot 记录同一插值 kernel，并把导入的 COM 引用保持到 retire fence 完成。
+
+这个入口仍然只记录命令，不提交命令列表，也不替宿主 signal `retire` fence。宿主
+必须在 `ExecuteCommandLists` 后 signal `pair.retire.value`，然后才可复用或关闭导出
+对象。句柄必须由宿主按 Windows 安全边界导出/复制；协议校验不会替应用授予句柄权限。
+`FGDS_SHARED_HANDLE_OPAQUE_FD` 仅留给 Vulkan，不能传给 D3D12 入口。
+
+共享句柄协议测试（`shared_protocol_test`）只使用伪句柄验证结构、HDR 范围、adapter
+一致性、fence 值和不支持的 mask；它没有伪装成真实跨进程 GPU 成功。真实 GPU 运行仍需
+在两个进程、同一 adapter、实际共享资源/fence 和目标游戏 swapchain 上验证。

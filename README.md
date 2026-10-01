@@ -5,8 +5,8 @@
 
 [简体中文](#中文) · [English](#english) · [Releases](https://github.com/chen121207/FreeFrameGen/releases)
 
-> **当前状态 / Status:** v0.3.0 development line, experimental beta.
-> v0.3.0 开发线，实验性 beta 版本。
+> **当前状态 / Status:** v0.4.0 first public release, early access.
+> v0.4.0 首个公开发布版，早期体验；不是 v1.0 全游戏兼容承诺。
 
 ---
 
@@ -23,11 +23,13 @@ FreeFrameGen（FFG）把两个使用场景放在同一个 Windows 项目中：
 
 ### 当前能力
 
-- D3D12 原生 FGDS v0.1（冻结 ABI）、v0.2 能力协商与 v0.3 多在途 slot 接口。
-- Vulkan 原生 FGDS v0.1/v0.2/v0.3 独立 ABI；Vulkan V3 使用 timeline semaphore 做 slot 退休检查。
+- D3D12 原生 FGDS v0.1（冻结 ABI）、v0.2 能力协商、v0.3 多在途 slot 与 v0.4 HDR/跨进程共享资源入口。
+- Vulkan 原生 FGDS v0.1/v0.2/v0.3/v0.4 独立 ABI；Vulkan V3 使用 timeline semaphore，v0.4 提供外部对象协议校验。
 - D3D12 compute：Color、Depth、双向 Motion Vector、Object ID、深度/ID 遮挡和 camera-cut 回退。
 - 捕获模式：Desktop Duplication、D3D11→D3D12 shared texture/fence、GPU 转色/缩放/运动估计/warp 合并提交。
 - 自适应块匹配、往返一致性检查、低可信度端点回退，以及 --deadline-ms 超时保护。
+- `--replace`/`--fullscreen`/`--borderless` 全屏替换输出；`--hdr-output` 使用 FP16 scRGB 输出。
+- 全部捕获算法不使用 AI 或训练模型；捕获路径不注入游戏，只有开发者主动接入的 Native FGDS 才能取得游戏真实资源。
 - Windows 安装器、卸载器、开始菜单入口和桌面快捷方式支持；程序不会安装驱动、服务或自启动项。
 
 ### 给玩家：安装和快速开始
@@ -56,22 +58,28 @@ FreeFrameGen（FFG）把两个使用场景放在同一个 Windows 项目中：
 # 为低延迟实验设置源帧 deadline（4..100 ms，默认 24 ms）
 .\bin\ffg_capture.exe --output 0 --seconds 60 --width 960 --deadline-ms 16
 
+# 覆盖显示器的 FFG 无边框替换输出（不注入游戏）
+.\bin\ffg_capture.exe --output 0 --replace --seconds 60 --width 960
+
+# 请求 FP16 scRGB HDR 输出（Desktop Duplication 源仍为 BGRA8 SDR）
+.\bin\ffg_capture.exe --output 0 --replace --hdr-output --seconds 60 --width 960
+
 # 只运行调度/历史连续性自检，不访问桌面
 .\bin\ffg_capture.exe --self-test
 ~~~
 
-捕获程序的完整参数和限制见 [docs/CAPTURE.md](docs/CAPTURE.md)。捕获预览不是全屏替换层，也不会改变游戏逻辑帧率或输入采样率。
+捕获程序的完整参数和限制见 [docs/CAPTURE.md](docs/CAPTURE.md)。替换输出是 FFG 自己的置顶无边框窗口，不修改游戏 swapchain、逻辑帧率或输入采样率。
 
 ### 两条路径
 
 | 路径 | 适用对象 | 输入 | 同步责任 | 当前边界 |
 | --- | --- | --- | --- | --- |
-| 原生 FGDS | 游戏/引擎/渲染器开发者 | Color、Depth、双向 Motion、Object ID | 宿主负责资源状态、提交、等待、signal、Present | 同进程；尚无跨进程共享句柄协议 |
-| 捕获模式 | 不改游戏的玩家和诊断 | Desktop Duplication 颜色帧 | FFG 负责 shared fence 和单飞资源所有权 | 仅 SDR；遮挡、HDR、动态 resize/access-lost 尚未自动恢复 |
+| 原生 FGDS | 游戏/引擎/渲染器开发者 | Color、Depth、双向 Motion、Object ID；v0.4 共享句柄/HDR 元数据 | 宿主负责资源状态、提交、signal、Present；D3D12 共享入口负责 OpenSharedHandle/queue Wait | D3D12 跨进程需同一 adapter 和宿主导出的句柄；Vulkan 外部对象目前只校验协议 |
+| 捕获模式 | 不改游戏的玩家和诊断 | Desktop Duplication 颜色帧 | FFG 负责 shared fence、单飞资源所有权和替换输出 | 源仍 SDR BGRA8；HDR 只扩展输出，动态恢复和独占 swapchain 尚未实现 |
 
 ### 原生模式协议（FGDS）
 
-FGDS 是本项目维护中的实验协议，不是行业标准。v0.1 的结构布局和入口保持冻结；v0.2/v0.3 使用追加结构和新入口，不改变旧 ABI。D3D12 与 Vulkan 是两套独立 ABI，字段含义相近但句柄类型不同。
+FGDS 是本项目维护中的实验协议，不是行业标准。v0.1 的结构布局和入口保持冻结；v0.2/v0.3/v0.4 使用追加结构和新入口，不改变旧 ABI。D3D12 与 Vulkan 是两套独立 ABI，字段含义相近但句柄类型不同。
 
 #### 入口版本
 
@@ -79,6 +87,12 @@ FGDS 是本项目维护中的实验协议，不是行业标准。v0.1 的结构�
 - **Vulkan**：include/fgds/fgds_vk.h、include/ffg/ffg_vk.h；ffgVkRecordV2 为显式资源位入口，ffgVkCreateV3/ffgVkRecordV3 使用 timeline semaphore 做多 slot。
 - 调用 ffgGetCapabilities* 前必须把 structSize 设置为对应结构的 sizeof。能力不满足时，宿主应显示最近真实帧或回退到旧路径。
 - FgdsFrameV2/FgdsPairV2（Vulkan 为 FgdsVk*V2）的 resourceFlags 至少包含 core 四项；HUD/透明 mask 当前没有可用的 mask-aware kernel，设置后会明确报错，不会静默忽略。
+
+#### v0.4 HDR 与跨进程原生接入
+
+`include/fgds/ipc.h` 定义 `FgdsHdrMetadata`、共享图像、共享 fence、共享 frame/pair 结构。HDR 元数据支持 SDR/sRGB、scRGB/linear、HDR10/PQ 和 HLG；两个输入端点与输出目标必须声明一致的元数据。协议只接受线性 RGBA32_FLOAT 计算资源，HDR 色彩转换和 Present 由宿主/输出链路负责。
+
+D3D12 的 `ffgRecordSharedV1` 在消费者进程实际打开导出的资源和 fence 句柄，在同一 command queue 上等待两个 ready value，再调用 V3 kernel；导入对象会保持到 retire fence 完成。生产者必须复制 Win32/NT 句柄到消费者进程，并保证 adapter LUID、格式、尺寸、资源状态和 fence 生命周期正确。Vulkan 的 `FgdsVkExternalImage`/`FgdsVkExternalSync` 目前提供严格协议校验，实际 external memory import 和 queue wait 仍由宿主完成。
 
 #### 每个端点必须提供
 
@@ -146,7 +160,7 @@ Vulkan V3 要求 Vulkan 1.2 或 VK_KHR_timeline_semaphore，每个 slot 使用�
 
 默认源帧 deadline 为 24 ms。源帧过期、预测会超预算或插值完成后已过期时，FFG 显示最新真实帧并重置历史，不把积压工作无限排队。accumulated_skips、history_resets、deadline_skips、deadline_overruns 和 mean_flow_submit_wait_ms 只描述捕获链路，不能当作端到端输入延迟或游戏 FPS。
 
-当前捕获模式只处理 SDR 和固定启动时的窗口客户区；HDR/宽色域、旋转显示器、独占全屏、被遮挡/最小化窗口、动态 resize、access-lost 自动恢复、鼠标透传和全屏输出尚未完成。没有真实 Depth/Object ID/HUD，因此不会把估计结果伪装成 FGDS 原生数据。
+当前捕获源仍是 Desktop Duplication 的 BGRA8 SDR，窗口客户区在启动时固定。`--replace` 是覆盖所选显示器的 FFG borderless topmost 窗口；`--hdr-output` 是 FP16 scRGB 输出，不是 HDR10/PQ 源 passthrough。独占全屏、被遮挡/最小化窗口、动态 resize、access-lost 自动恢复、鼠标透传和真实 Depth/Object ID/HUD 仍需宿主或后续版本提供。
 
 ### 构建和开发
 
@@ -160,21 +174,21 @@ cmake --build build --config Release --parallel
 .\build\Release\ffg_capture.exe --self-test
 .\build\Release\ffg_demo.exe --headless --warp --debug
 .\build\Release\ffg_flow_test.exe --stress --debug
-ctest --test-dir build -C Release --output-on-failure
+ctest --test-dir build -C Release --output-on-failure  # 10 tests
 
 # 可选 Vulkan
 cmake -S . -B build-vulkan-root -A x64 -DFFG_BUILD_VULKAN=ON -DFFG_VK_HEADERS="D:/path/to/Vulkan-Headers/include" -DFFG_GLSLANG="D:/path/to/glslangValidator.exe"
 cmake --build build-vulkan-root --config Release --parallel
-ctest --test-dir build-vulkan-root -C Release --output-on-failure
+ctest --test-dir build-vulkan-root -C Release --output-on-failure  # 12 tests with Vulkan
 ~~~
 
 ffg_demo 是原生协议和合成场景验证程序，不是 L4D2 渲染器。--warp 只用于软件回归，不代表硬件性能。安装器构建见 [docs/INSTALLER.md](docs/INSTALLER.md)，源代码结构见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
 ### 本地验证和已知限制
 
-截至 2026-10-01，本机验证包括：D3D12 CTest 9/9、显式 Vulkan 构建 CTest 10/10、真实 Vulkan V3 两 slot/timeline smoke、D3D12 V3 slot 忙/复用、WARP 与 RTX 3050 flow stress、Desktop Duplication headless 运行、安装包清单/卸载保护测试。一次 RTX 3050 640×360 捕获运行得到 captured=100、generated=98、deadline_skips=1、deadline_overruns=0、合并提交等待均值约 4.26 ms；这不是端到端延迟或通用游戏画质保证。
+截至 2026-10-01，本机验证包括：D3D12 CTest 10/10、显式 Vulkan 构建 CTest 12/12、真实 Vulkan V3 两 slot/timeline smoke、D3D12 V3 slot 忙/复用、HDR/共享协议伪句柄校验、RTX 3050 Desktop Duplication 替换输出和 scRGB FP16 输出、WARP 与 flow stress、安装包清单/卸载保护测试。替换输出约 1 秒捕获成功退出；内部等待均值不等于端到端延迟或通用游戏画质保证。
 
-仍未验证或未实现：真实游戏内 native 接入、跨进程共享纹理/fence、HDR、动态 resize/access-lost 自动恢复、高质量稠密 Optical Flow、复杂反遮挡/temporal reconstruction、AI refinement、生产级全屏呈现、端到端输入延迟、VAC/反作弊兼容。项目不会声称“所有游戏都已验证”或“绝对不会封禁”。
+仍未验证或未实现：真实游戏内 native 接入、跨进程双进程游戏矩阵、HDR10/PQ 源 passthrough、动态 resize/access-lost 自动恢复、高质量稠密 Optical Flow、复杂反遮挡/temporal reconstruction、独占游戏 swapchain 替换、端到端输入延迟、VRR、VAC/反作弊兼容。项目不会声称“所有游戏都已验证”、零延迟或“绝对不会封禁”。
 
 ### 文档索引
 
@@ -186,6 +200,8 @@ ffg_demo 是原生协议和合成场景验证程序，不是 L4D2 渲染器。--
 - [路线图](docs/ROADMAP.md)
 - [验证记录](docs/VALIDATION.md)
 - [v0.3.0-beta.1 发布说明](docs/RELEASE_NOTES_v0.3.0-beta.1.md)
+- [v0.4.0 首个公开发布说明](docs/RELEASE_NOTES_v0.4.0.md)
+- [正式版发布门槛](docs/RELEASE_GATE.md)
 - [卸载与 VAC 边界](docs/UNINSTALL_AND_VAC.md)
 
 ---
@@ -203,11 +219,13 @@ The paths share the reprojection/occlusion direction but have separate resource,
 
 ### Current capabilities
 
-- D3D12 native FGDS v0.1 (frozen ABI), v0.2 capability negotiation, and v0.3 multi-flight slots.
-- Independent Vulkan FGDS v0.1/v0.2/v0.3 ABI; Vulkan V3 retires slots with timeline semaphores.
+- D3D12 native FGDS v0.1 (frozen ABI), v0.2 capability negotiation, v0.3 multi-flight slots, and v0.4 HDR/shared-resource entry points.
+- Independent Vulkan FGDS v0.1/v0.2/v0.3/v0.4 ABI; Vulkan V3 retires slots with timeline semaphores and v0.4 validates external-object descriptors.
 - D3D12 compute using Color, Depth, bidirectional Motion Vector, Object ID, depth/ID occlusion, and camera-cut fallback.
 - Capture path with Desktop Duplication, D3D11-to-D3D12 shared texture/fence, and one combined GPU submission for conversion, scaling, motion estimation, and warp.
 - Adaptive block matching, consistency checks, low-confidence endpoint fallback, and a --deadline-ms back-pressure policy.
+- `--replace`/`--fullscreen`/`--borderless` monitor replacement output and `--hdr-output` FP16 scRGB presentation.
+- No AI or training model is used. Capture mode never injects into a game; only a developer-supplied Native FGDS integration can access real game resources.
 - Windows installer, uninstaller, Start menu entry, and desktop shortcut support; no driver, service, or auto-start item is installed.
 
 ### For players: install and quick start
@@ -228,21 +246,23 @@ Advanced users can run the capture executable directly:
 .\bin\ffg_capture.exe --output 0 --seconds 60 --width 960
 .\bin\ffg_capture.exe --window 0 --seconds 60 --width 960
 .\bin\ffg_capture.exe --output 0 --seconds 60 --width 960 --deadline-ms 16
+.\bin\ffg_capture.exe --output 0 --replace --seconds 60 --width 960
+.\bin\ffg_capture.exe --output 0 --replace --hdr-output --seconds 60 --width 960
 .\bin\ffg_capture.exe --self-test
 ~~~
 
-See [docs/CAPTURE.md](docs/CAPTURE.md) for the complete command reference and known limitations. Capture preview is not a full-screen replacement layer and does not change game logic FPS or input sampling.
+See [docs/CAPTURE.md](docs/CAPTURE.md) for the complete command reference and known limitations. Replacement output is an FFG-owned topmost borderless window; it does not modify a game's swapchain, logic FPS, or input sampling.
 
 ### Two paths
 
 | Path | Intended user | Input | Synchronization owner | Current boundary |
 | --- | --- | --- | --- | --- |
-| Native FGDS | Game/engine/renderer developers | Color, Depth, bidirectional Motion, Object ID | Host owns resource states, submit, waits, signals, and Present | Same-process only; no cross-process handle protocol yet |
-| Capture | Players and diagnostics without game changes | Desktop Duplication color frames | FFG owns the shared-fence single-flight handoff | SDR only; occlusion, HDR, resize/access-lost recovery are incomplete |
+| Native FGDS | Game/engine/renderer developers | Color, Depth, bidirectional Motion, Object ID; v0.4 shared handles/HDR metadata | Host owns states, submit, signal, Present; D3D12 shared entry imports and queue-waits | D3D12 sharing requires one adapter and host-exported handles; Vulkan external objects are protocol validation only |
+| Capture | Players and diagnostics without game changes | Desktop Duplication color frames | FFG owns shared-fence handoff and replacement output | Input remains SDR BGRA8; HDR output is scRGB and recovery/exclusive swapchain paths are incomplete |
 
 ### Native mode protocol (FGDS)
 
-FGDS is an experimental protocol maintained by this project, not an industry standard. v0.1 layout and entry points remain frozen; v0.2/v0.3 use append-only structures and new entry points. D3D12 and Vulkan are separate ABIs with similar field meanings but different handle types.
+FGDS is an experimental protocol maintained by this project, not an industry standard. v0.1 layout and entry points remain frozen; v0.2/v0.3/v0.4 use append-only structures and new entry points. D3D12 and Vulkan are separate ABIs with similar field meanings but different handle types.
 
 #### Entry points and versions
 
@@ -250,6 +270,12 @@ FGDS is an experimental protocol maintained by this project, not an industry sta
 - **Vulkan:** include/fgds/fgds_vk.h, include/ffg/ffg_vk.h; use ffgVkRecordV2 for explicit resource flags and ffgVkCreateV3/ffgVkRecordV3 for timeline-semaphore slots.
 - Set structSize = sizeof(struct) before every ffgGetCapabilities* call. If required capabilities are unavailable, show the latest real frame or use the older path.
 - V2 frame resourceFlags must include the core resources. HUD/transparency masks are rejected until a mask-aware kernel is implemented; they are never silently ignored.
+
+#### v0.4 HDR and cross-process native transport
+
+`include/fgds/ipc.h` defines `FgdsHdrMetadata`, shared images, shared fences, and shared frame/pair structures. HDR metadata covers SDR/sRGB, scRGB/linear, HDR10/PQ, and HLG; both endpoints and the output target must declare matching metadata. The interpolation kernel still consumes linear RGBA32_FLOAT resources, while color conversion and Present remain host/output responsibilities.
+
+D3D12 `ffgRecordSharedV1` opens producer-exported resource and fence handles in the consumer process, waits for both ready values on the supplied command queue, and records the V3 kernel. Imported COM objects remain retained until the retire fence completes. The producer must duplicate Win32/NT handles into the consumer process and maintain adapter LUID, format, size, resource-state, and fence lifetime rules. Vulkan `FgdsVkExternalImage`/`FgdsVkExternalSync` currently provide strict protocol validation; the host still performs external-memory import and queue waits.
 
 #### Required endpoint data
 
@@ -315,7 +341,7 @@ The capture path is based on [Desktop Duplication](https://learn.microsoft.com/e
 
 The default source-frame deadline is 24 ms. If a source frame is stale, the estimate predicts a deadline miss, or interpolation finishes too late, FFG presents the newest real frame and resets history instead of accumulating work. accumulated_skips, history_resets, deadline_skips, deadline_overruns, and mean_flow_submit_wait_ms describe only the capture path; they are not end-to-end input latency or game FPS.
 
-The current capture path is SDR-only and fixes a selected window client rectangle at startup. HDR/wide color, rotated displays, exclusive fullscreen, occluded/minimized windows, dynamic resize, access-lost recovery, mouse passthrough, and full-screen output are incomplete. Because capture has no real Depth/Object ID/HUD, its estimated flow is never exposed as native FGDS data.
+Capture input remains Desktop Duplication BGRA8 SDR, with a selected window client rectangle fixed at startup. `--replace` covers the selected monitor with an FFG-owned borderless topmost window; `--hdr-output` is FP16 scRGB output, not HDR10/PQ source passthrough. Exclusive fullscreen, occluded/minimized windows, dynamic resize, access-lost recovery, mouse passthrough, and real Depth/Object ID/HUD still require a host or later implementation.
 
 ### Build and develop
 
@@ -328,20 +354,20 @@ cmake --build build --config Release --parallel
 .\build\Release\ffg_capture.exe --self-test
 .\build\Release\ffg_demo.exe --headless --warp --debug
 .\build\Release\ffg_flow_test.exe --stress --debug
-ctest --test-dir build -C Release --output-on-failure
+ctest --test-dir build -C Release --output-on-failure  # 10 tests
 
 cmake -S . -B build-vulkan-root -A x64 -DFFG_BUILD_VULKAN=ON -DFFG_VK_HEADERS="D:/path/to/Vulkan-Headers/include" -DFFG_GLSLANG="D:/path/to/glslangValidator.exe"
 cmake --build build-vulkan-root --config Release --parallel
-ctest --test-dir build-vulkan-root -C Release --output-on-failure
+ctest --test-dir build-vulkan-root -C Release --output-on-failure  # 12 tests with Vulkan
 ~~~
 
 ffg_demo validates native contracts and synthetic scenes; it is not an L4D2 renderer. --warp is for software regression only and is not a hardware performance result. See [docs/INSTALLER.md](docs/INSTALLER.md) for packaging and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the source layout.
 
 ### Validation and known limitations
 
-As of 2026-10-01, local validation includes D3D12 CTest 9/9, an explicit Vulkan build with CTest 10/10, a real Vulkan V3 two-slot/timeline smoke test, D3D12 V3 busy-slot/reuse checks, WARP and RTX 3050 flow stress, a Desktop Duplication headless run, and installer manifest/uninstall protection tests. One RTX 3050 640×360 capture run produced captured=100, generated=98, deadline_skips=1, deadline_overruns=0, with about 4.26 ms mean merged-submit wait; this is not end-to-end latency or a universal game-quality result.
+As of 2026-10-01, local validation includes D3D12 CTest 10/10, an explicit Vulkan build with CTest 12/12, a real Vulkan V3 two-slot/timeline smoke test, D3D12 V3 busy-slot/reuse checks, HDR/shared protocol validation, RTX 3050 Desktop Duplication replacement and scRGB FP16 output, WARP and flow stress, and installer manifest/uninstall protection tests. Replacement output runs completed on the RTX 3050; internal wait timing is not end-to-end latency or a universal game-quality result.
 
-Not yet verified or implemented: real in-game native integrations, cross-process shared texture/fence protocol, HDR, automatic resize/access-lost recovery, dense production optical flow, complex disocclusion/temporal reconstruction, AI refinement, production full-screen presentation, end-to-end input-latency measurement, and VAC/anti-cheat compatibility. FFG does not claim that every game is validated or that bans are impossible.
+Not yet verified or implemented: real game-host native integrations, a two-process game matrix, HDR10/PQ source passthrough, automatic resize/access-lost recovery, dense production optical flow, complex disocclusion/temporal reconstruction, exclusive game swapchain replacement, end-to-end input-latency measurement, VRR pacing, and VAC/anti-cheat compatibility. FFG does not claim that every game is validated, that latency is zero, or that bans are impossible.
 
 ### Documentation
 
@@ -353,6 +379,8 @@ Not yet verified or implemented: real in-game native integrations, cross-process
 - [Roadmap](docs/ROADMAP.md)
 - [Validation record](docs/VALIDATION.md)
 - [v0.3.0-beta.1 release notes](docs/RELEASE_NOTES_v0.3.0-beta.1.md)
+- [v0.4.0 first public release notes](docs/RELEASE_NOTES_v0.4.0.md)
+- [Stable-release gate](docs/RELEASE_GATE.md)
 - [Uninstall and VAC boundary](docs/UNINSTALL_AND_VAC.md)
 
 ---

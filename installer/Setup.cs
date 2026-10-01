@@ -544,7 +544,7 @@ internal sealed class SetupForm : Form
         };
         card.Controls.Add(status);
 
-        Label footer = new Label { Text = "FreeFrameGen Beta · Windows 10/11 x64 · " + Product.Version, Location = new Point(26, 600), Size = new Size(430, 28), Font = new Font(Font.FontFamily, 7F), ForeColor = Color.FromArgb(104, 119, 136) };
+        Label footer = new Label { Text = "FreeFrameGen Public Release · Windows 10/11 x64 · " + Product.Version, Location = new Point(26, 600), Size = new Size(500, 28), Font = new Font(Font.FontFamily, 7F), ForeColor = Color.FromArgb(104, 119, 136) };
         Controls.Add(footer);
         Button cancel = new Button { Text = "关闭 / Close", Location = new Point(548, 594), Size = new Size(88, 36), FlatStyle = FlatStyle.System, Font = new Font(Font.FontFamily, 8F) };
         cancel.Click += delegate { if (!busy) Close(); };

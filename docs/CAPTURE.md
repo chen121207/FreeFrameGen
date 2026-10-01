@@ -1,11 +1,11 @@
-# FFG v0.3：真实捕获插帧预览
+# FFG v0.4：真实捕获插帧与替换输出
 
 ## 入口和边界
 
 `ffg_capture.exe` 是独立程序，使用 Windows Desktop Duplication。无参启动先列出显示器并等待输入编号；输入后才捕获。安装/启动不会自动选择游戏、改启动项或注入 DLL。
 默认采集整块选定显示器，可能包括其他应用和通知；也可用 `--list-windows` 列出可见窗口并用 `--window N` 选择其客户端矩形（仍受 Desktop Duplication 的遮挡/保护内容限制）。没有网络功能，不将捕获像素读回 CPU、不保存/上传画面。测试程序的合成图片读回与实际捕获是分开的。
 
-要求 Windows 10 2004+/11、D3D12 GPU、支持 D3D11 shared fence 的驱动、SDR 横向显示器。同一显示器所在适配器同时创建 D3D11/D3D12 设备；不跨显卡传图。HDR/宽色域、旋转显示器明确拒绝，不靠错误色彩继续显示。
+要求 Windows 10 2004+/11、D3D12 GPU、支持 D3D11 shared fence 的驱动、SDR 横向显示器。同一显示器所在适配器同时创建 D3D11/D3D12 设备；不跨显卡传图。Desktop Duplication 输入仍限制为 BGRA8 SDR；HDR 源捕获/色调映射暂不伪造。
 
 ```powershell
 ffg_capture.exe                         # 交互选择显示器，直到关闭
@@ -16,6 +16,8 @@ ffg_capture.exe --output 0 --seconds 30  # 指定设备，限时预览
 ffg_capture.exe --output 0 --width 1280  # 处理宽度 320..1920，默认 960；不超过源宽度
 ffg_capture.exe --output 0 --seconds 5 --headless --debug
 ffg_capture.exe --output 0 --seconds 5 --headless --deadline-ms 16
+ffg_capture.exe --output 0 --replace --seconds 30 # 覆盖所选显示器的 borderless 输出
+ffg_capture.exe --output 0 --replace --hdr-output --seconds 30 # FP16 scRGB 输出（源仍为 SDR）
 ffg_capture.exe --self-test           # scheduler/history guard; no display access
 ffg_capture.exe --help
 ```
@@ -23,16 +25,24 @@ ffg_capture.exe --help
 预览窗口获得焦点时：空格比较 FG ON/OFF，Esc 停止；关闭窗口也会停止。控制台 Ctrl+C 可终止。
 `--headless` 必须有明确 `--output` 或 `--window` 和有限 `--seconds`，只用于诊断，不会偷偷无限捕获。`--self-test` 只验证捕获调度的历史连续性，不访问显示器。`--debug` 需要系统 Graphics Tools。
 
-建议先让游戏窗口化/无边框，启动预览观察；**这不是可覆盖游戏全屏操作的成品**，没有鼠标透传或全屏输出。窗口选择只固定启动时的客户端矩形，遮挡、最小化、动态 resize、保护内容、独占全屏和桌面切换可能不可捕获，不绕过系统保护。
+建议先让游戏窗口化/无边框，启动预览观察；`--replace`/`--fullscreen` 会在选定显示器上创建 FFG 自有的置顶无边框窗口，覆盖桌面输出，不注入游戏，也不接管游戏 swapchain。按 Esc 或关闭窗口可退出。窗口选择只固定启动时的客户端矩形，遮挡、最小化、动态 resize、保护内容、独占全屏和桌面切换可能不可捕获，不绕过系统保护。
+
+`--hdr-output` 将输出 swapchain 设为 `R16G16B16A16_FLOAT`，并请求 `DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709`（scRGB）色彩空间；不宣称 HDR10 PQ/BT.2020 元数据，也不会把 SDR Desktop Duplication 数据凭空变成 HDR。显示器或驱动不支持 scRGB 时，程序会明确报错并退出。
 
 ## 实际数据路径
 
-1. DuplicateOutput/AcquireNextFrame 取得 BGRA8 纹理和 QPC 时间戳，过滤仅鼠标移动的更新。
+1. DuplicateOutput/AcquireNextFrame 取得 BGRA8 纹理和 QPC 时间戳，过滤仅鼠标移动的更新；当前源端 HDR/宽色域会明确拒绝。
 2. D3D11 CopyResource 到共享显存；D3D11 Signal/Flush，D3D12 queue Wait 同一个 shared fence。
 3. D3D12 compute：SRGB SRV 解码、双线性缩放到工作分辨率；保留前后两帧线性 RGBA32F。
 4. GPU 4×4 均值下采样，1/4 分辨率粗搜索（±16 工作像素、步长 4）。粗向量接近零或全分辨率残差较高时，再做竞争种子搜索（±8、步长 2）；最后每 8×8 像素做 ±3 局部细化。
 5. 三次 inverse warp，匹配残差/坐标/往返一致性检查；颜色一致时混合，无效时取可信端点或新帧。
-6. 原始旧帧 A → 生成的 A/B 中间帧 → 下一对旧帧 B；D3D12 swapchain vsync 呈现。输出做线性→sRGB 编码，不再简单套 2.2 gamma。
+6. 原始旧帧 A → 生成的 A/B 中间帧 → 下一对旧帧 B；D3D12 swapchain 使用 waitable frame-latency=1 呈现。窗口模式输出做线性→sRGB 编码；`--hdr-output` 使用线性 scRGB FP16 输出。
+
+## 全屏替换输出与 HDR 边界
+
+- `--replace`、`--fullscreen`、`--borderless` 三个开关等价：创建 FFG 自有 `WS_POPUP` 窗口，尺寸取选定显示器工作区，置于 `HWND_TOPMOST`，并设置 `WDA_EXCLUDEFROMCAPTURE` 防止捕获自身造成反馈。该路径只覆盖桌面合成结果，不修改游戏文件、窗口样式、进程或 swapchain；它不是 DLL 注入或独占游戏输出。
+- 输出 swapchain 的 waitable frame-latency 与 `Present(1, 0)` 保留，生成结果完成后才提交，避免无限队列。当前采用单飞 D3D12 提交，端到端输入延迟仍需实机测量。
+- `--hdr-output` 的 scRGB 色彩空间标签属于输出元数据边界；输入仍是 `DXGI_FORMAT_B8G8R8A8_UNORM` Desktop Duplication。PQ/BT.2020/HDR10 静态元数据、HDR 源的曝光/色调映射和跨进程 HDR 共享尚未实现，不能把本路径称为 HDR passthrough。
 
 没有真实 Depth/Object ID/HUD，因此不向 FGDS 原生接口填假数据；当前 `ColorFlow` 是内部模块，尚未导出 Capture SDK ABI。
 没有神经模型、Lossless Scaling、Remix、DLSS，也没有使用 RT Core——此项运动估计是普通 GPU compute 工作，不是光线追踪工作。

@@ -11,11 +11,25 @@ jobs:
       - run: .\build\Release\ffg_demo.exe --headless --warp
       - run: .\build\Release\ffg_flow_test.exe --warp
       - run: .\build\Release\ffg_capture.exe --help
+      - run: .\build\Release\ffg_capture.exe --self-test
+      - run: .\build\Release\ffg_player.exe --help
+      - run: ctest --test-dir build -C Release --output-on-failure
       - run: cmake --install build --config Release --prefix build/package
       - run: .\tools\test-install.ps1 -Package (Resolve-Path build/package).Path
       - run: .\tools\build-installer.ps1
+      - name: Verify release installer hash
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem .\build\setup\*-Setup-*-x64.exe | Select-Object -First 1
+          if ($null -eq $installer) { throw 'Installer artifact was not produced' }
+          .\tools\test-release-artifact.ps1 -Installer $installer.FullName
       - run: .\tools\test-shortcut-identity.ps1
-      - run: .\tools\test-installer.ps1 -Installer .\build\setup\FreeFrameGen-Setup-0.3.0-x64.exe
+      - name: Run installer regression
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem .\build\setup\*-Setup-*-x64.exe | Select-Object -First 1
+          if ($null -eq $installer) { throw 'Installer artifact was not produced' }
+          .\tools\test-installer.ps1 -Installer $installer.FullName
       - uses: actions/upload-artifact@v4
         with:
           name: FreeFrameGen-windows-x64-setup

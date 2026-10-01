@@ -2,12 +2,12 @@
 
 ## 用户操作
 
-1. 双击本产品的 `FreeFrameGen-Setup-0.3.0-x64.exe`。
+1. 双击本产品的 `FreeFrameGen-Setup-0.4.0-x64.exe`。
 2. 选择新的独立目录，点击“安装”。默认目录：`%LOCALAPPDATA%\Programs\FreeFrameGen`。
-3. 安装器默认创建桌面快捷方式，同时创建开始菜单入口；如不需要可取消勾选。启动后选择显示器/窗口，预览内空格比较开/关，Esc 停止。
+3. 安装器默认创建桌面快捷方式，同时创建开始菜单入口；如不需要可取消勾选。启动后选择显示器/窗口，并可勾选“全屏替换输出”和“HDR 输出”；预览内空格比较开/关，Esc 停止。
 4. 卸载任选：Windows 设置 → 应用 → 已安装的应用；开始菜单“卸载”；安装目录内双击 `Uninstall.exe`。
 
-安装显示器捕获插帧预览、Native Demo、Runtime（FFG）、SDK 与说明。不是 L4D2 游戏安装器，不处理旧 Remix，不提供光追或生产级低延迟全屏帧生成。
+安装显示器捕获插帧预览、Native Demo、Runtime（FFG）、SDK 与说明。替换输出使用 FFG 自有 borderless 窗口，不注入或改写游戏；HDR 选项是 scRGB FP16 输出，源捕获仍为 SDR BGRA8。不是 L4D2 游戏安装器，不处理旧 Remix，不提供 HDR10 passthrough 或生产级低延迟保证。
 Windows 10/11 x64 + .NET Framework 4.8；Windows 11 通常已内置。程序本身还需要支持 D3D12 的设备。
 安装器未签名，Windows 可能显示“未知发布者”或 SmartScreen 提示；不要求关闭安全软件。
 
@@ -38,9 +38,9 @@ TEMP 中的小型卸载工作副本由系统临时文件清理或用户之后清
 ## 静默模式
 
 ```powershell
-Start-Process -Wait .\FreeFrameGen-Setup-0.3.0-x64.exe -ArgumentList '--silent --install --dir "D:\Apps\FreeFrameGen" --log "D:\Apps\setup.log"'
+Start-Process -Wait .\FreeFrameGen-Setup-0.4.0-x64.exe -ArgumentList '--silent --install --dir "D:\Apps\FreeFrameGen" --log "D:\Apps\setup.log"'
 # Silent deployments do not touch the desktop unless explicitly requested.
-Start-Process -Wait .\FreeFrameGen-Setup-0.3.0-x64.exe -ArgumentList '--silent --install --desktop --dir "D:\Apps\FreeFrameGen" --log "D:\Apps\setup.log"'
+Start-Process -Wait .\FreeFrameGen-Setup-0.4.0-x64.exe -ArgumentList '--silent --install --desktop --dir "D:\Apps\FreeFrameGen" --log "D:\Apps\setup.log"'
 Start-Process -Wait "D:\Apps\FreeFrameGen\Uninstall.exe" -ArgumentList '--silent --log "D:\Apps\uninstall.log"'
 ```
 
@@ -52,8 +52,9 @@ Start-Process -Wait "D:\Apps\FreeFrameGen\Uninstall.exe" -ArgumentList '--silent
 
 ```powershell
 .\tools\build-installer.ps1
+.\tools\test-release-artifact.ps1 -Installer .\build\setup\FreeFrameGen-Setup-0.4.0-x64.exe
 .\tools\test-shortcut-identity.ps1
-.\tools\test-installer.ps1 -Installer .\build\setup\FreeFrameGen-Setup-0.3.0-x64.exe
+.\tools\test-installer.ps1 -Installer .\build\setup\FreeFrameGen-Setup-0.4.0-x64.exe
 ```
 
 构建脚本查找现有 CMake/Visual Studio，并使用系统 .NET Framework C# 编译器；不联网获取工具。
@@ -62,3 +63,5 @@ CMake 安装阶段生成的 package 中 GUI 载荷仅选择 bin/include/lib/docs
 
 两个仓库的 `installer/Setup.cs` 是同一份实现；`installer/product.json` 决定名称、独立产品 ID、程序入口与说明。修改共享实现应同步两个仓库。
 编译时生成 Product.g.cs，将所有载荷 SHA256 内嵌进 EXE；不信任外部可编辑的卸载文件列表。
+`test-release-artifact.ps1` 会在发布前检查安装器旁边的 `.sha256` 文件格式、文件名、
+实际 SHA256 和最小文件大小。它不代替安装/卸载回归，也不证明安装器已签名。

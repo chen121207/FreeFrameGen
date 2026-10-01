@@ -50,15 +50,17 @@ Capture 不伪造不存在的引擎 Depth/Object ID；必须另设 capability fl
 
 ## API 和模块
 
-- include/fgds：格式/时间/所有权契约与冻结 v0.1/V2/V3 结构。
-- include/ffg + src/ffg.cpp：in-process D3D12 DLL SDK、能力查询、V2 入口和 V3 多槽入口。
+- include/fgds：格式/时间/所有权契约与冻结 v0.1/V2/V3 结构，以及 v0.4 HDR/共享句柄描述。
+- include/ffg + src/ffg.cpp：in-process D3D12 DLL SDK、能力查询、V2/V3 入口和
+  `ffgRecordSharedV1`（OpenSharedHandle、queue Wait、slot 保持 COM 引用）。
 - include/fgds/fgds_vk.h + src/ffg_vk.cpp：独立 Vulkan 原生 runtime，V2 入口通过可选 Vulkan 工程构建。
 - shaders/interpolate.hlsl：独立 GPU 算法。
 - support/scene_renderer.hpp：合成输入 fixture，不属于实际游戏兼容层。
 - src/demo.cpp：独立 host/present 与数值回归。
 - src/capture.cpp + support/desktop_capture.hpp：真实显示器捕获与独立输出。
 - support/color_flow.hpp + shaders/capture.hlsl：颜色专用金字塔块匹配和插值，参见 [捕获说明](CAPTURE.md)。
-- scheduler、IPC、advanced reconstruction：尚无实现。
+- scheduler、跨进程 Present/完整独占全屏、advanced reconstruction：尚无实现；
+  当前已实现 D3D12 共享资源/fence 记录与 borderless 替换输出，Vulkan 外部对象仍是协议校验。
 
 Windows 捕获一手资料：
 https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/desktop-dup-api
